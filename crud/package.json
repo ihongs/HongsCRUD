@@ -1,7 +1,7 @@
 {
   "name": "hongs-crud",
   "version": "0.1.0",
-  "description": "Homogeneous Operational Rule Data Ensemble",
+  "description": "Hong's CRUD library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
