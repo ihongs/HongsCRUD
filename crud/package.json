@@ -1,0 +1,23 @@
+{
+  "name": "hongs-crud",
+  "version": "0.1.0",
+  "description": "Homogeneous Operational Rule Data Ensemble",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "mongoose": "^7.0.0 || ^8.0.0"
+  },
+  "devDependencies": {
+    "mongoose": "^8.0.0",
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "license": "MIT"
+}
