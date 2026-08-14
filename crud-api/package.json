@@ -1,0 +1,23 @@
+{
+  "name": "crud-api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hongs-crud": "file:../crud/hongs-crud-0.1.0.tgz",
+    "koa": "^2.15.0",
+    "koa-bodyparser": "^4.4.1",
+    "mongoose": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/koa": "^2.15.0",
+    "@types/koa-bodyparser": "^4.3.12",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.0.0"
+  }
+}
