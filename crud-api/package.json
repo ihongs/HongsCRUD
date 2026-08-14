@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "hongs-crud": "file:../crud/hongs-crud-0.1.0.tgz",
+    "hongs-crud": "^0.1.0",
     "koa": "^2.15.0",
     "koa-bodyparser": "^4.4.1",
     "mongoose": "^8.0.0"
