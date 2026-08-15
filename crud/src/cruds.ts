@@ -1,3 +1,5 @@
+// AI 注意：我有对齐强迫症，不要删除用于对齐的空格
+
 import mongoose, { Schema, Model } from 'mongoose';
 import type { SchemaType } from 'mongoose';
 import type {
@@ -169,9 +171,6 @@ export class Cradle implements Crud {
   schema(params: SchemaParams, _ctx: Context): SchemaResult {
     const paths = this.getSchema().paths;
     const userEnums: Record<string, EnumItem[]> = (this.getSchema() as any).get('enums') || {};
-    const userEnumRefs: Record<string, string > = (this.getSchema() as any).get('enumRefs') || {};
-    const userDataRefs: Record<string, DataRef> = (this.getSchema() as any).get('dataRefs') || {};
-    const userRules: Record<string, Record<string, any>> = (this.getSchema() as any).get('rules') || {};
     const cols = params.cols;
 
     const fields: Record<string, SchemaField> = {};
@@ -191,10 +190,11 @@ export class Cradle implements Crud {
       }
 
       const st = path as unknown as SchemaType;
+      const opts = (st as any).options || {};
+
       const info: SchemaField = {
         type: (st as any).instance || 'Mixed',
       };
-      const opts = (st as any).options || {};
       if ((st as any).defaultValue !== undefined && typeof (st as any).defaultValue !== 'function') {
         info.default = (st as any).defaultValue;
       }
@@ -204,21 +204,26 @@ export class Cradle implements Crud {
       if (opts.immutable && typeof opts.immutable !== 'function') {
         info.immutable = true;
       }
+      if (opts.description) {
+        info.description = opts.description;
+      }
 
-      const rules: Record<string, any> = userRules[fieldName] ? { ...userRules[fieldName] } : {};
-      if (rules.min === undefined && opts.min !== undefined) rules.min = opts.min;
-      if (rules.max === undefined && opts.max !== undefined) rules.max = opts.max;
-      if (rules.minLength === undefined && opts.minlength !== undefined) rules.minLength = opts.minlength;
-      if (rules.maxLength === undefined && opts.maxlength !== undefined) rules.maxlength = opts.maxlength;
-      if (rules.pattern === undefined && opts.match) rules.pattern = String(opts.match);
-      if (Object.keys(rules).length) info.rules = rules;
+      // options：优先读字段内 options（自定义 options），再补齐 mongoose 的校验选项
+      const options: Record<string, any> = opts.options ? { ...opts.options } : {};
+      if (options.min === undefined && opts.min !== undefined) options.min = opts.min;
+      if (options.max === undefined && opts.max !== undefined) options.max = opts.max;
+      if (options.minLength === undefined && opts.minlength !== undefined) options.minLength = opts.minlength;
+      if (options.maxLength === undefined && opts.maxlength !== undefined) options.maxLength = opts.maxlength;
+      if (options.pattern === undefined && opts.match) options.pattern = String(opts.match);
+      if (Object.keys(options).length) info.options = options;
 
-      // enum 处理：同步收集到 enums
-      if (userEnumRefs[fieldName]) {
-        info.enumRef = userEnumRefs[fieldName];
-        const refName = userEnumRefs[fieldName];
-        if (userEnums[refName]) enums[refName] = userEnums[refName];
+      // enum / enumRef：优先读字段内 enumRef（字段 options 上自定义的引用名）
+      const fieldEnumRef: string | undefined = opts.enumRef;
+      if (fieldEnumRef) {
+        info.enumRef = fieldEnumRef;
+        if (userEnums[fieldEnumRef]) enums[fieldEnumRef] = userEnums[fieldEnumRef];
       } else if ((st as any).enumValues && (st as any).enumValues.length) {
+        // 字段原生 mongoose enum：把字段名当 enumRef，枚举值同步收集
         info.enumRef = fieldName;
         enums[fieldName] = (st as any).enumValues.map((v: any) => ({
           value: v,
@@ -226,9 +231,9 @@ export class Cradle implements Crud {
         }));
       }
 
-      // dataRef 处理
-      if (userDataRefs[fieldName]) {
-        info.dataRef = userDataRefs[fieldName];
+      // dataRef：直接读字段内 dataRef（自定义 options）
+      if (opts.dataRef) {
+        info.dataRef = opts.dataRef as DataRef;
       }
 
       fields[fieldName] = info;
@@ -282,94 +287,130 @@ export class Cradle implements Crud {
   update(params: UpdateParams, _ctx: Context): UpdateResult {
     const { id, find, data, force } = params;
     const ids = Array.isArray(id) ? id : [id];
-    const Model = this.getModel();
 
     // 一次性查出所有 id + find 条件下存在的 _id，避免 N 次查询
-    const cond = idAndFind(ids, find);
-    return Model.find(cond).select('_id').lean().exec()
-      .then(docs => {
-        const existingIdSet = new Set(docs.map(doc => String((doc as any)._id)));
-        const operable: string[] = [];
-        const unoperable: string[] = [];
-        for (const id of ids) {
-          const key = String(id);
-          if (existingIdSet.has(key)) operable.push(key);
-          else unoperable.push(key);
-        }
-
-        if (unoperable.length && !force) {
-          throw new CrudError(
-            `Cannot update, ids not found or not permitted: ${unoperable.join(', ')}`,
-            CrudErrorCode.UNOPERABLE,
-            { ids: unoperable },
-          );
-        }
-
+    return this.chkIds(ids, find, force, 'update').then(operable => {
         if (!operable.length) return { count: 0 };
 
-        return (this.set(operable, data) as unknown as Promise<number>)
-          .then(count => ({ count }));
+        /**
+         * 逐个调用 set，触发完整 validator
+         * updateMany() 即便 runValidators 为 true，也不会触发自定义 validator
+         */
+        return (async (): Promise<UpdateResult> => {
+          let count = 0;
+          for (const id of operable) {
+            count += await (this.set(id, data) as unknown as Promise<0 | 1>);
+          }
+          return { count };
+        })() as unknown as UpdateResult;
       }) as unknown as UpdateResult;
   }
 
   delete(params: DeleteParams, _ctx: Context): DeleteResult {
     const { id, find, data, force } = params;
     const ids = Array.isArray(id) ? id : [id];
-    const Model = this.getModel();
 
     // 一次性查出所有 id + find 条件下存在的 _id，避免 N 次查询
-    const cond = idAndFind(ids, find);
-    return Model.find(cond).select('_id').lean().exec()
-      .then(docs => {
-        const existingIdSet = new Set(docs.map(doc => String((doc as any)._id)));
-        const operable: string[] = [];
-        const unoperable: string[] = [];
-        for (const id of ids) {
-          const key = String(id);
-          if (existingIdSet.has(key)) operable.push(key);
-          else unoperable.push(key);
-        }
-
-        if (unoperable.length && !force) {
-          throw new CrudError(
-            `Cannot delete, ids not found or not permitted: ${unoperable.join(', ')}`,
-            CrudErrorCode.UNOPERABLE,
-            { ids: unoperable },
-          );
-        }
-
+    return this.chkIds(ids, find, force, 'delete').then(operable => {
         if (!operable.length) return { count: 0 };
 
-        return (this.del(operable, data) as unknown as Promise<number>)
+        return (this.delAll(operable, data) as unknown as Promise<number>)
           .then(count => ({ count }));
       }) as unknown as DeleteResult;
   }
   
   /* ---------- core methods ---------- */
 
+  /**
+   * 添加一个文档
+   * 触发完整 validator
+   */
   add(data: Record<string, any>): string {
     const Model = this.getModel();
     return Model.create(data).then((doc: any) => String(doc._id)) as unknown as string;
   }
 
-  set(ids: string | string[], data: Record<string, any>): number {
+  /**
+   * 更新一个文档
+   * 触发完整 validator
+   */
+  set(id: string, data: Record<string, any>): number {
+    const Model = this.getModel();
+    return Model.findById(id).exec()
+      .then((doc: any) => {
+        if (!doc) return 0;
+
+        // 局部更新
+        for (const key of Object.keys(data)) {
+          doc.set(key, data[key]);
+        }
+
+        // mongoose 自动深度比较，值未变的不算 modified
+        const changed = doc.modifiedPaths().length > 0;
+        if (! changed) return 0 as const;
+
+        return doc.save().then(() => 1 as const);
+      }) as unknown as number;
+  }
+
+  /**
+   * 更新多个文档
+   * 不触发自定义 validator
+   */
+  setAll(ids: string[], data : Record<string, any>): number {
     const Model = this.getModel();
     const cond = idAndFind(ids);
     return Model.updateMany(cond, { $set: data }, { runValidators: true }).exec()
       .then(res => Number(res.modifiedCount ?? 0)) as unknown as number;
   }
 
-  del(ids: string | string[], _data?: Record<string, any>): number {
+  /**
+   * 删除多个文档
+   * 不触发任何的 validator
+   */
+  delAll(ids: string[], data?: Record<string, any>): number {
     const Model = this.getModel();
     const cond = idAndFind(ids);
     const sdel = this.getSoftDeleteData();
     if (sdel) {
-      return Model.updateMany(cond, { $set: sdel }, { runValidators: true }).exec()
+      return Model.updateMany(cond , { $set: sdel }).exec()
         .then(res => Number(res.modifiedCount ?? 0)) as unknown as number;
     } else {
       return Model.deleteMany(cond).exec()
-        .then(res => Number(res.deletedCount ?? 0)) as unknown as number;
+        .then(res => Number(res. deletedCount ?? 0)) as unknown as number;
     }
+  }
+
+  /**
+   * 检查可操作的文档
+   */
+  chkIds(ids: string[], find?: Record<string, any>, force?: boolean, action: string = 'update'): Promise<string[]> {
+    const Model = this.getModel();
+    const cond = idAndFind(ids, find);
+    return Model.find(cond).select('_id').lean().exec()
+      .then(docs => {
+        const   existIds = new Set(docs.map(doc => String((doc as any)._id)));
+        const   operable: string[] = [];
+        const unoperable: string[] = [];
+        for (const id of ids) {
+          const key = String(id);
+          if (existIds.has (key)) {
+              operable.push(key);
+          } else {
+            unoperable.push(key);
+          }
+        }
+
+        if (unoperable.length && !force) {
+          throw new CrudError(
+            `Cannot ${action}, ids not found or not permitted: ${unoperable.join(', ')}`,
+            CrudErrorCode.UNOPERABLE,
+            { ids: unoperable },
+          );
+        }
+
+        return operable;
+      });
   }
 
 }
@@ -430,6 +471,7 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
     if (! isPermitted(name, ctx.roles || [])) {
       throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrorCode.UNPERMITTED);
     }
+
     return getFunc(name)(params, ctx);
   }
 
@@ -449,6 +491,7 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
     if (! isPermitted(name, ctx.roles || [])) {
       throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrorCode.UNPERMITTED);
     }
+
     return (crud as any)[funcName].call(crud, params, ctx);
   }
 

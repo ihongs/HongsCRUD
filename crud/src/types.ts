@@ -1,3 +1,5 @@
+// AI 注意：我有对齐强迫症，不要删除用于对齐的空格
+
 import type { Document } from 'mongoose';
 
 export type FindSpec = Record<string, any>;
@@ -71,9 +73,12 @@ export interface SchemaField {
   required?: boolean;
   immutable?: boolean;
   description?: string;
+  /** 字段内声明的枚举引用名（对应 enums 的键） */
   enumRef?: string ;
+  /** 字段内声明的数据引用 */
   dataRef?: DataRef;
-  rules?: Record<string, any>;
+  /** 字段内声明的公开选项（给前端使用，非 mongoose 保留） */
+  options?: Record<string, any>;
 }
 
 /** Schema options 扩展结构（仅供参考） */
@@ -81,18 +86,12 @@ export interface SchemaExtra {
   collection?: string ;
   softDelete?: SoftDel;
   enums?: Record<string, EnumItem[]>;
-  enumRefs?: Record<string, string >;
-  dataRefs?: Record<string, DataRef>;
-  rules?: Record<string, Record<string, any>>;
 }
 
-export interface SoftDel {
-  /** 伪删除字段名 */
-  field: string;
-  /** 已删除标记值，可为值或函数，默认 true */
-  value?: any;
-  /** 未删除的查询，可以显式指定，默认 $ne: value */
-  query?: any;
+export interface EnumItem {
+  value: string;
+  label: string;
+  [key: string]: any;
 }
 
 export interface DataRef {
@@ -104,10 +103,13 @@ export interface DataRef {
   cols?: ColsSpec;
 }
 
-export interface EnumItem {
-  value: string;
-  label: string;
-  [key: string]: any;
+export interface SoftDel {
+  /** 伪删除字段名 */
+  field: string;
+  /** 已删除标记值，可为值或函数，默认 true */
+  value?: any;
+  /** 未删除的查询，可以显式指定，默认 $ne: value */
+  query?: any;
 }
 
 export interface Context {
