@@ -102,6 +102,10 @@ export interface SchemaExtra {
   enums?: Record<string, EnumItem[]>;
   /** 可统计字段名（schema 第二个参数扩展，代替逐字段 opts.countable） */
   countable?: string[];
+  /** search 默认 limit，未传时的取值，默认 1；设为 0 表示不限 */
+  limitDef?: number;
+  /** search 最大 limit 上限，超过会被截断，默认 1000；设为 0 表示不限 */
+  limitMax?: number;
 }
 
 export interface EnumItem {
