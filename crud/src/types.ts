@@ -7,6 +7,42 @@ export type ColsSpec = Record<string, 0 |  1>;
 export type SortSpec = Record<string, 1 | -1>;
 export type CountMode = 'all' | 'next' | 'only';
 
+export interface CreateParams {
+  data: Record<string, any>;
+  [key: string]: any;
+}
+
+export interface CreateResult {
+  id: string;
+  [key: string]: any;
+}
+
+export interface UpdateParams {
+  id: string | string[];
+  find?: FindSpec;
+  data : Record<string, any>;
+  force?: boolean;
+  [key: string]: any;
+}
+
+export interface UpdateResult {
+  count: number;
+  [key: string]: any;
+}
+
+export interface DeleteParams {
+  id: string | string[];
+  find?: FindSpec;
+  data?: Record<string, any>;
+  force?: boolean;
+  [key: string]: any;
+}
+
+export interface DeleteResult {
+  count: number;
+  [key: string]: any;
+}
+
 export interface SearchParams {
   id?: string | string[];
   find?: FindSpec;
@@ -15,68 +51,38 @@ export interface SearchParams {
   start?: number;
   limit?: number;
   count?: CountMode;
+  [key: string]: any;
 }
 
-export interface SearchResultWithList {
-  list: Document[];
+export interface SearchResult {
+  list?: Document[];
   count?: number;
+  [key: string]: any;
 }
-
-export interface SearchResultCountOnly {
-  count: number;
-}
-
-export type SearchResult = SearchResultWithList | SearchResultCountOnly;
 
 export interface CountsParams {
   find?: FindSpec;
   cols?: ColsSpec;
   sels?: Record<string, any[]>; // 已选值 {field: [value1, value2, ...]}
   top?: number | Record<string, number>; // 最大数量 {field: 10}
+  [key: string]: any;
 }
 
 export interface CountsResult {
   counts: Record<string, Record<any, number>>; // 统计量 {field: {value1: 10, value2: 20, ...}}
-  total: number; // 总数量
-}
-
-export interface CreateParams {
-  data: Record<string, any>;
-}
-
-export interface CreateResult {
-  id: string;
-}
-
-export interface UpdateParams {
-  id: string | string[];
-  find?: FindSpec;
-  data : Record<string, any>;
-  force?: boolean;
-}
-
-export interface UpdateResult {
-  count: number;
-}
-
-export interface DeleteParams {
-  id: string | string[];
-  find?: FindSpec;
-  data?: Record<string, any>;
-  force?: boolean;
-}
-
-export interface DeleteResult {
-  count: number;
+  count : number; // 总数量
+  [key: string]: any;
 }
 
 export interface SchemaParams {
   cols?: ColsSpec;
+  [key: string]: any;
 }
 
 export interface SchemaResult {
   fields: Record<string, SchemaField>;
   enums : Record<string, EnumItem []>;
+  [key: string]: any;
 }
 
 export interface SchemaField {

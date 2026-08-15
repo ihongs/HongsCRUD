@@ -393,7 +393,7 @@ export class Cradle implements Crud {
     }
 
     if (!targets.length) {
-      return totalPromise.then(total => ({ counts: {}, total })) as unknown as CountsResult;
+      return totalPromise.then(total => ({ counts: {}, count: total })) as unknown as CountsResult;
     }
 
     // 分两组：
@@ -478,7 +478,7 @@ export class Cradle implements Crud {
         }
         counts[f] = map;
       }
-      return { counts, total };
+      return { counts, count: total };
     }) as unknown as CountsResult;
   }
 
