@@ -28,6 +28,18 @@ export interface SearchResultCountOnly {
 
 export type SearchResult = SearchResultWithList | SearchResultCountOnly;
 
+export interface CountsParams {
+  find?: FindSpec;
+  cols?: ColsSpec;
+  sels?: Record<string, any[]>; // 已选值 {field: [value1, value2, ...]}
+  top?: number | Record<string, number>; // 最大数量 {field: 10}
+}
+
+export interface CountsResult {
+  counts: Record<string, Record<any, number>>; // 统计量 {field: {value1: 10, value2: 20, ...}}
+  total: number; // 总数量
+}
+
 export interface CreateParams {
   data: Record<string, any>;
 }
@@ -74,9 +86,9 @@ export interface SchemaField {
   immutable?: boolean;
   description?: string;
   /** 字段内声明的枚举引用名（对应 enums 的键） */
-  enumRef?: string ;
-  /** 字段内声明的数据引用 */
-  dataRef?: DataRef;
+  enumRef?: string | EnumRef;
+  /** 字段内声明的数据引用名（对应 FUNCS 的键） */
+  dataRef?: string | DataRef;
   /** 字段内声明的公开选项（给前端使用，非 mongoose 保留） */
   options?: Record<string, any>;
 }
@@ -94,13 +106,17 @@ export interface EnumItem {
   [key: string]: any;
 }
 
+export interface EnumRef {
+  enumName : string;
+  valueKey?: string; // 默认 value
+  labelKey?: string; // 默认 label
+}
+
 export interface DataRef {
-  ref: string;
-  fk?: string;
-  pk?: string;
-  find?: FindSpec;
-  sort?: SortSpec;
-  cols?: ColsSpec;
+  method : string;
+  params?: Record<string, any>;
+  valueKey?: string; // 默认 _id
+  labelKey?: string; // 默认 name
 }
 
 export interface SoftDel {

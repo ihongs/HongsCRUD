@@ -18,7 +18,6 @@ import type {
   SchemaResult,
   SchemaField,
   EnumItem,
-  DataRef,
   SoftDel,
 } from './types';
 
@@ -169,12 +168,12 @@ export class Cradle implements Crud {
   /* ---------- Crud interface ---------- */
 
   schema(params: SchemaParams, _ctx: Context): SchemaResult {
+    const cols  = params.cols;
     const paths = this.getSchema().paths;
-    const userEnums: Record<string, EnumItem[]> = (this.getSchema() as any).get('enums') || {};
-    const cols = params.cols;
 
     const fields: Record<string, SchemaField> = {};
     const enums : Record<string, EnumItem []> = {};
+    const menus : Record<string, EnumItem []> = (this.getSchema() as any).get('enums') || {};
 
     for (const [key, path] of Object.entries(paths)) {
       if (key.startsWith('__')) continue;
@@ -208,7 +207,7 @@ export class Cradle implements Crud {
         info.description = opts.description;
       }
 
-      // options：优先读字段内 options（自定义 options），再补齐 mongoose 的校验选项
+      // options：优先读字段内 options（自定义内部 options），再补齐 mongoose 的校验选项
       const options: Record<string, any> = opts.options ? { ...opts.options } : {};
       if (options.min === undefined && opts.min !== undefined) options.min = opts.min;
       if (options.max === undefined && opts.max !== undefined) options.max = opts.max;
@@ -217,11 +216,16 @@ export class Cradle implements Crud {
       if (options.pattern === undefined && opts.match) options.pattern = String(opts.match);
       if (Object.keys(options).length) info.options = options;
 
-      // enum / enumRef：优先读字段内 enumRef（字段 options 上自定义的引用名）
-      const fieldEnumRef: string | undefined = opts.enumRef;
-      if (fieldEnumRef) {
-        info.enumRef = fieldEnumRef;
-        if (userEnums[fieldEnumRef]) enums[fieldEnumRef] = userEnums[fieldEnumRef];
+      // enumRef：优先读字段内 enumRef（自定义引用）
+      if (opts.enumRef) {
+        info.enumRef = opts.enumRef;
+        // enumRef 可为对象或字符串，统一从 enumName 取 key 去查
+        const enumName = typeof opts.enumRef !== 'string'
+          ? opts.enumRef.enumName
+          : opts.enumRef;
+        if (menus[enumName]) {
+          enums[enumName] = menus[enumName];
+        }
       } else if ((st as any).enumValues && (st as any).enumValues.length) {
         // 字段原生 mongoose enum：把字段名当 enumRef，枚举值同步收集
         info.enumRef = fieldName;
@@ -231,9 +235,9 @@ export class Cradle implements Crud {
         }));
       }
 
-      // dataRef：直接读字段内 dataRef（自定义 options）
+      // dataRef：直接读字段内 dataRef（自定义引用）
       if (opts.dataRef) {
-        info.dataRef = opts.dataRef as DataRef;
+        info.dataRef = opts.dataRef;
       }
 
       fields[fieldName] = info;
@@ -251,10 +255,10 @@ export class Cradle implements Crud {
 
     const buildQuery = () => {
       const q = Model.find(cond);
-      if (cols) q.select(cols as any);
-      if (sort) q.sort(sort as any);
-      if (start) q.skip(start);
-      if (limit) q.limit(limit);
+      if (cols ) q.select(cols as any);
+      if (sort ) q.sort  (sort as any);
+      if (start) q.skip  (start);
+      if (limit) q.limit (limit);
       return q;
     };
 
