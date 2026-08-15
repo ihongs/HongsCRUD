@@ -105,6 +105,8 @@ const userSchema = new Schema(
 | `limitDef` | SchemaExtra | `search()` 默认 `limit`，默认 1，0 不限 |
 | `limitMax` | SchemaExtra | `search()` `limit` 上限，默认 1000，0 不限 |
 
+然后，`new Crud(userSchema)` 即可获得 `search` / `create` / `update` / `delete` / `counts` / `schema` 能力。
+
 ---
 
 ## 2. 方法请求参数与返回结果

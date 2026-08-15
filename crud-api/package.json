@@ -9,7 +9,7 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "hongs-crud": "^0.1.0",
+    "hongs-crud": "^0.1.1",
     "koa": "^2.15.0",
     "koa-bodyparser": "^4.4.1",
     "mongoose": "^8.0.0"
