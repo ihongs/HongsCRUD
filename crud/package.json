@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "check": "tsc --noEmit",
     "test:crud": "tsc -p tsconfig.test.json && node dist-test/test/crud.js",
     "test:counts": "tsc -p tsconfig.test.json && node dist-test/test/counts.js"
   },

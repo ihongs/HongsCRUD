@@ -3,7 +3,7 @@
 // 前置：本地 MongoDB 已启动（默认 mongodb://127.0.0.1:27017）
 
 import mongoose from 'mongoose';
-import { Cradle, CrudError, CrudErrorCode } from '../src/cruds';
+import { Cradle, CrudError, CrudErrno } from '../src/cruds';
 
 const MONGO_URI = 'mongodb://127.0.0.1:27017/test';
 const DB_NAME   = 'test';
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
     assertOk('update 不存在 id (不传 force) 抛 UNOPERABLE', false);
   } catch (e: any) {
     assertOk('update 不存在 id (不传 force) 抛 UNOPERABLE',
-      e instanceof CrudError && e.code === CrudErrorCode.UNOPERABLE);
+      e instanceof CrudError && e.code === CrudErrno.OWNER_MISMATCH);
   }
 
   // update 不存在 id 且 force=false → 抛 UNOPERABLE
@@ -203,7 +203,7 @@ async function main(): Promise<void> {
     assertOk('update 不存在 id (force=false) 抛 UNOPERABLE', false);
   } catch (e: any) {
     assertOk('update 不存在 id (force=false) 抛 UNOPERABLE',
-      e instanceof CrudError && e.code === CrudErrorCode.UNOPERABLE);
+      e instanceof CrudError && e.code === CrudErrno.OWNER_MISMATCH);
   }
 
   // update 不存在 id 但 force=true → 不抛错，count = 0
@@ -239,7 +239,7 @@ async function main(): Promise<void> {
     assertOk('delete 不存在 id (force=false) 抛 UNOPERABLE', false);
   } catch (e: any) {
     assertOk('delete 不存在 id (force=false) 抛 UNOPERABLE',
-      e instanceof CrudError && e.code === CrudErrorCode.UNOPERABLE);
+      e instanceof CrudError && e.code === CrudErrno.OWNER_MISMATCH);
   }
 
   // delete 不存在 id 但 force=true → 不抛错

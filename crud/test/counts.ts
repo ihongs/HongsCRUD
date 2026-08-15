@@ -85,14 +85,14 @@ async function main(): Promise<void> {
   // ---------- 1) 基础统计 ----------
   console.log('--- 1) 基础统计：全部 countable 字段 ---');
   const r1 = await callCounts({});
-  assert('total = 6', r1.total, 6);
+  assert('total = 6', r1.count, 6);
   assert('counts.status', r1.counts.status, { draft: 3, published: 2, archived: 1 });
   assert('counts.role'  , r1.counts.role  , { admin: 3, user: 3 });
 
   // ---------- 2) cols 白名单 ----------
   console.log('\n--- 2) cols 白名单：只统计 status ---');
   const r2 = await callCounts({ cols: { status: 1 } });
-  assert('total = 6', r2.total, 6);
+  assert('total = 6', r2.count, 6);
   assert('counts 只含 status', Object.keys(r2.counts).sort(), ['status']);
   assert('counts.status', r2.counts.status, { draft: 3, published: 2, archived: 1 });
 
@@ -101,14 +101,14 @@ async function main(): Promise<void> {
   //   role  : 应用 status=draft 条件，只看 draft 文档的 role 分布
   console.log('\n--- 3) sels 联动：sels.status = [draft] ---');
   const r3 = await callCounts({ sels: { status: ['draft'] } });
-  assert('total = 3（draft 的 3 条）', r3.total, 3);
+  assert('total = 3（draft 的 3 条）', r3.count, 3);
   assert('counts.status（不应用自身 sels，全量）', r3.counts.status, { draft: 3, published: 2, archived: 1 });
   assert('counts.role（应用 status=draft 过滤）', r3.counts.role, { admin: 1, user: 2 });
 
   // ---------- 4) sels 空数组（等同没传） ----------
   console.log('\n--- 4) sels 空数组：sels.status = [] ---');
   const r4 = await callCounts({ sels: { status: [] } });
-  assert('total = 6（空 sels 不影响）', r4.total, 6);
+  assert('total = 6（空 sels 不影响）', r4.count, 6);
   assert('counts.status', r4.counts.status, { draft: 3, published: 2, archived: 1 });
   assert('counts.role'  , r4.counts.role  , { admin: 3, user: 3 });
 
@@ -128,7 +128,7 @@ async function main(): Promise<void> {
   //   a3 draft    user  30
   //   a5 published user  28
   //   a6 archived  admin 35
-  assert('total = 3', r6.total, 3);
+  assert('total = 3', r6.count, 3);
   assert('counts.status', r6.counts.status, { draft: 1, published: 1, archived: 1 });
   assert('counts.role'  , r6.counts.role  , { user: 2, admin: 1 });
 

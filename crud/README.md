@@ -1,404 +1,372 @@
-# HongsCRUD
+# hongs-crud
 
-## 定位
-
-`hongs-crud` 是 HongsCRUD 项目的核心包，负责将外部接口调用（RPC / MCP）与底层 Mongoose Schema 串联起来。围绕三条主线展开：**简化 CRUD**、**权限细分可控**、**暴露数据结构**。
-
-### 1. 简化 CRUD
-
-把"写一个数据接口"从「拼查询条件 + 处理分页 + 校验存在性 + 转换 ObjectId + 重复样板」压缩为「注册一个 `Crud` 实例」。
-
-- **标准方法即开即用**：`schema` / `search` / `create` / `update` / `delete` 五个方法覆盖 90% 的数据访问需求，省去手写 controller。
-
-  ```ts
-  const userSchema = new Schema({ name: String, age: Number }, { collection: 'user' });
-  regCrud('user', new Cradle(userSchema)); // 一行注册即获得全部 CRUD 能力
-  ```
-
-- **统一请求参数**：ObjectId 转换（`idAndFind`）、查询条件合并（`mergeFind`）、字段 / 排序 / 分页（`cols` / `sort` / `start` / `limit`）均在 `search` 内部完成，业务侧只传业务参数。
-
-- **统计按需开关**：`search` 的 `count` 字段支持四种模式，避免无谓的 `countDocuments`：
-
-  | `count` | 行为 |
-  |---|---|
-  | 未传 | 仅返回 `{ list }`，零统计成本 |
-  | `'next'` | 用 `findOne().skip(start+limit)` 探测下一页更高效 |
-  | `'only'` | 仅返回 `{ count }`，用于独立计数场景 |
-  | `'all'` | 列表 + 总数一并返回 |
-
-- **可操作校验**：`update` / `delete` 在写之前逐个检查，部分缺失时通过 `force: true` 决定「抛错」还是「跳过」，避免误操作与静默失败。
-
-- **伪删除透明**：配置 `softDelete` 后，`del` 自动改写为「打标记」，`search` / `update` / `delete` 自动注入排除条件，业务代码完全无感。
-
-- **可定制不重写**：内核方法 `add` / `put` / `del` 与标准方法解耦，子类覆盖 `search` 注入数据隔离、覆盖 `create` 补字段时，仍可复用 `super` 的查询/写入逻辑。
-
-### 2. 权限细分可控
-
-在「外部接口 → 数据库」之间架设一道统一的权限闸门，三层防线层层收紧：
-
-```
-外部调用
-  │
-  ▼
-① callFunc 解析 name → FUNCS / CRUDS 中查找
-  │
-  ▼
-② callable 白名单 ──► Crud 声明哪些方法可被外部调用（默认 4 个数据方法）
-  │
-  ▼
-③ isPermitted ──► 校验当前用户角色是否拥有该 name 的执行权限
-  │
-  ▼
-执行方法（业务层可再做细粒度校验，如 owner / 租户隔离）
-```
-
-- **角色 → 动作 集合扁平映射**：`regRole(role, acts)` 把角色登记为一组动作字符串，动作名即 `callFunc` 的 `name`，与代码组织方式天然对齐。
-
-  ```ts
-  regRole('admin', ['user.search', 'user.create', 'user.update', 'user.delete']);
-  regRole('user',  ['user.search']);                  // 普通用户只能查
-  regRole('guest',  ['health.ping', 'system.stats']); // 仅放行全局函数
-  ```
-
-- **`callable` 声明式白名单**：`Crud` 接口要求实现 `callable: string[]`，`Cradle` 默认 `['schema','search','create','update','delete']` —— 即使 `name` 解析成功，只要方法不在 `callable` 中就被拒。**这层防线与权限解耦**：决定"这个模型愿不愿意把这个方法暴露出去"，与"哪个用户能用"是两件事。
-
-- **统一权限校验**：`callFunc` 在调用 `Func` 与 `Crud` 方法前都会用 `isPermitted(name, ctx.roles)` 校验，未通过抛 `CradleError(UNPERMITTED)`。两条调用通道（全局函数 / 模型方法）走同一套权限逻辑，无遗漏。
-
-- **双通道覆盖**：
-
-  | 通道 | 名称形式 | 用途 |
-  |---|---|---|
-  | Func | `health.ping` | 不绑定模型的工具方法（健康检查、统计、运维） |
-  | Crud | `user.search` | 模型相关的数据方法（CRUD + 自定义业务方法） |
-
-- **ctx 携带身份上下文**：`Context` 包含 `uid`、`roles`，可自由扩展（`tenant`、`ip`、`locale` 等），业务方法内可基于 `ctx` 做行级权限（如 `params.find.owner = ctx.uid` 实现数据隔离）。
-
-- **可审计的错误码**：`CradleError` 用 JSON-RPC 风格错误码区分失败原因，调用方与上游网关可据此做差异化处理。
-
-  | Code | 枚举 | 含义 |
-  |---|---|---|
-  | `-32001` | `UNPERMITTED` | 无权限调用 |
-  | `-32601` | `UNCALLABLE` | 找不到目标方法（未注册 / 不在 callable） |
-  | `-32602` | `UNOPERABLE` | 找不到目标数据（不存在或不可操作） |
-
-### 3. 暴露数据结构
-
-让数据库结构对调用方「可读、可消费、可生成」，而不是黑盒，以便 AI 及前端开发人员查阅。
-
-- **`schema` 方法自省 Mongoose Schema**：遍历 `schema.paths`，把 Mongoose 内部的 `SchemaType` 转译为干净的 `{ fields, enums }` 结构，调用方无需依赖 mongoose 即可消费。
-
-  ```ts
-  // 一个 schema 即可生成结构化描述
-  const { fields, enums } = crud.schema({ cols: { name: 1, age: 1 } }, ctx);
-  ```
-
-- **每个字段携带元信息**：`SchemaField` 不止有类型，还把校验规则、默认值、是否必填、是否不可变、枚举引用、外部引用一并暴露。
-
-  | 字段属性 | 来源 | 用途 |
-  |---|---|---|
-  | `type` | Mongoose `instance` | 类型推断 |
-  | `default` | `defaultValue` | 表单默认值、补全字段 |
-  | `required` / `immutable` | schema 选项 | 表单必填、只读判定 |
-  | `rules` | `min`/`max`/`minlength`/`maxlength`/`match` | 前端表单校验 |
-  | `enumRef` | `enumRefs` + `enums` | 下拉选项绑定 |
-  | `dataRef` | `dataRefs` | 外键关联描述（ref/fk/pk/find/sort/cols） |
-
-- **cols 投影按需裁剪**：`schema({ cols: { name: 1, age: 1 } })` 即可只返回指定字段，与 `search` 的 `cols` 行为一致，适合"只取关心的字段"场景。
-
-- **枚举字典独立输出**：`enums` 把字段引用的枚举值（含 `value` + `label`）单独打包返回，前端可直接渲染下拉框、AI 可直接理解可选值。
-
-- **`dataRef` 描述关联关系**：声明字段引用其他模型（`ref`）、外键字段（`fk`）、显示主键（`pk`）、关联过滤（`find` / `sort` / `cols`），让 AI / 前端在不查数据库的前提下理解表间关系。
-
-- **AI 友好的三大特性**：
-  1. **结构化**：JSON 输出，无需解析注释或 .d.ts 即可消费；
-  2. **自描述**：字段类型 + 校验规则 + 枚举 + 关联齐全，AI 可据此生成合法的 `create` / `search` 请求；
-  3. **零依赖**：调用方拿到 `{ fields, enums }` 后无需 mongoose，AI Agent 在 MCP 等场景可直接基于 schema 编排查询。
-
-- **开发人员友好**：可基于 `schema` 输出动态生成表单、API 文档、TypeScript 类型、Mock 数据，避免 schema 与文档/类型/表单的多处同步维护。
-
-## 依赖
-
-- [mongoose](https://mongoosejs.com/) `^7.0.0 || ^8.0.0`（peerDependency）
-
-## 核心能力
-
-### 三套注册器
-
-| 注册器 | 注册 API | 查询 API | 判定 API | 说明 |
-|---|---|---|---|---|
-| Role | `regRole(role, acts)` | `getRole(role)` / `getRoleNames()` | `hasRole(role)` | 角色到「动作字符串集合」的映射 |
-| Func | `regFunc(name, func)` | `getFunc(name)` / `getFuncNames()` | `hasFunc(name)` | 全局函数注册表 |
-| Crud | `regCrud(name, crud)` | `getCrud(name)` / `getCrudNames()` | `hasCrud(name)` | 模型实例注册表 |
-
-```ts
-import { regRole, regFunc, regCrud, Cradle } from 'hongs-crud';
-import { Schema } from 'mongoose';
-
-// 1. 注册角色：admin 可执行 user.search / user.create 等
-regRole('admin', ['user.search', 'user.create', 'user.update', 'user.delete']);
-regRole('guest',  ['user.search']);
-
-// 2. 注册全局函数
-regFunc('health.ping', async () => ({ ok: true }));
-
-// 3. 注册 Crud：实例化 Cradle 并登记模型名
-const userSchema = new Schema(
-  {
-    name: String,
-    age : Number,
-  },
-  {
-    collection: 'user', // 必填，作为 mongoose.model 的名称
-  }
-);
-regCrud('user', new Cradle(userSchema));
-```
-
-### Cradle 类
-
-`Cradle` 实现 `Crud` 接口，构造时要求 `Schema` 已配置 `options.collection`。可选传入已编译的 `Model`，否则内部用 `mongoose.model(collection, schema)` 自动编译。
-
-```ts
-class Cradle implements Crud {
-  callable = ['schema', 'search', 'create', 'update', 'delete'];
-
-  constructor(schema: Schema, model?: Model<any>);
-
-  // 标准方法（5 个，由 Crud 接口约束）
-  schema(params: SchemaParams,  ctx: Context): SchemaResult;
-  search(params: SearchParams,  ctx: Context): SearchResult;
-  create(params: CreateParams,  ctx: Context): CreateResult;
-  update(params: UpdateParams,  ctx: Context): UpdateResult;
-  delete(params: DeleteParams,  ctx: Context): DeleteResult;
-
-  // 内核方法（被标准方法复用，子类可按需调用）
-  add(data): string;               // 新建，返回 _id
-  put(id, data ): 0 | 1;           // 按 _id 更新，返回影响数量
-  del(id, data?): 0 | 1;           // 按 _id 删除，返回影响数量
-
-  // 元信息访问
-  getSchema(): Schema;
-  getModel (): Model<any>;
-  getSoftDelete(): SoftDel | undefined;
-  getSoftDeleteData(): Record<string, any> | undefined; // 写入用的伪删除值
-  getSoftDeleteCond(): Record<string, any> | undefined; // 查询时排除已删除
-}
-```
-
-### 调度入口 callFunc
-
-`callFunc(name, params, ctx)` 是统一调度入口，按以下顺序解析 `name`：
-
-1. 命中 `FUNCS` 全局函数 → 权限校验后执行
-2. 解析 `crudName.funcName` 形式（含 `.`） → 命中 `CRUDS` 且 `funcName` 在 `crud.callable` 中 → 权限校验后调用 `crud[funcName](params, ctx)`
-3. 都未命中 → 抛 `CrudErrorCode.UNCALLABLE`
-
-权限校验统一使用 `isPermitted(auth, roles)`：只要用户任一角色对应的动作集合中包含 `name`，即视为放行。
-
-```ts
-import { callFunc } from 'hongs-crud';
-
-// 调用 Crud 方法（"user.search"）
-const result = await callFunc('user.search', {
-  find: {},
-  cols: { name: 1 },
-  sort: { createdAt: -1 },
-  start: 0,
-  limit: 20,
-}, { uid: 'u1', roles: ['admin'] });
-
-// 调用全局函数（"health.ping"）
-const pong = await callFunc('health.ping', {}, { roles: ['guest'] });
-```
-
-调度链路：
-
-```
-callFunc(name, params, ctx)
-  │
-  ├── FUNCS 命中 ──► isPermitted? ──► func(params, ctx)
-  │                  └─ 否 ──► CrudErrorCode.UNPERMITTED
-  │
-  ├── "crudName.funcName" 命中 + 在 callable 中
-  │     └─► isPermitted? ──► crud.funcName(params, ctx)
-  │                        └─ 否 ──► CrudErrorCode.UNPERMITTED
-  │
-  └── 都未命中 ──► CrudErrorCode.UNCALLABLE
-```
-
-## 标准方法
-
-每个 Crud 统一封装 5 个标准方法：
-
-| 方法 | 入参 | 出参 |
-|---|---|---|
-| `schema` | `{ cols? }` | `{ fields, enums }` |
-| `search` | `{ id?, find?, cols?, sort?, start?, limit?, count? }` | `{ list, count? }` 或 `{ count }` |
-| `create` | `{ data }` | `{ id }` |
-| `update` | `{ id, find?, data, force? }` | `{ count }` |
-| `delete` | `{ id, find?, data?, force? }` | `{ count }` |
-
-### search 的 count 模式
-
-`count` 字段控制是否附带统计与统计方式：
-
-| `count` | 行为 | 返回 |
-|---|---|---|
-| 未传 | 仅查询列表 | `{ list }` |
-| `'only'` | 仅统计总数 | `{ count }` |
-| `'next'` | 列表 + 是否有下一页（用 `findOne().skip(start+limit)` 探测，避免 `countDocuments`） | `{ list, count }`（`count` 为 0 / 1） |
-| `'all'` | 列表 + 总数 | `{ list, count }` |
-
-### update / delete 的存在性校验
-
-`update` 与 `delete` 会逐个用 `id` + `find` 探测目标是否存在：
-
-- 全部命中：正常执行，返回实际操作条数 `{ count }`
-- 部分未命中且未传 `force: true`：抛 `CradleError(UNOPERABLE)`，并在 `data.ids` 中给出不可操作的 id 列表
-- 部分未命中但 `force: true`：跳过未命中的，仅操作可命中的
-
-### Schema 扩展选项
-
-`Cradle` 通过 Mongoose `Schema.options` 上的扩展字段读取附加元信息，`schema` 方法会据此输出更丰富的结构：
-
-| 选项 | 类型 | 用途 |
-|---|---|---|
-| `collection` | `string` | **必填**，作为 `mongoose.model` 名称 |
-| `enums` | `Record<string, EnumItem[]>` | 枚举字典，可被字段通过 `enumRefs` 引用 |
-| `enumRefs` | `Record<string, string>` | 字段名 → 枚举名，把字段关联到 `enums` 中的某项 |
-| `dataRefs` | `Record<string, DataRef>` | 字段名 → 外部引用描述（`ref` / `fk` / `pk` / `find` / `sort` / `cols`） |
-| `rules` | `Record<string, Record<string, any>>` | 字段名 → 校验规则（`min` / `max` / `minLength` / `maxLength` / `pattern` 等） |
-| `softDelete` | `SoftDel` | 伪删除配置 |
-
-`SchemaResult` 输出形如：
-
-```ts
-{
-  fields: {
-    id:   { type: 'ObjectId' },
-    name: { type: 'String', required: true, rules: { maxLength: 32 } },
-    type: { type: 'String', enumRef: 'userType' },
-    orgId:{ type: 'ObjectId', dataRef: { ref: 'org', fk: '_id', pk: 'name' } },
-  },
-  enums: {
-    userType: [
-      { value: 'admin', label: '管理员' },
-      { value: 'user', label: '用户' },
-    ],
-  },
-}
-```
-
-### 伪删除 SoftDelete
-
-配置 `softDelete` 后，`del` 改为「打标记」式更新，`search` / `delete` 也会自动注入排除条件：
-
-```ts
-const userSchema = new Schema({
-  name: String,
-  deletedAt: Date,
-}, {
-  collection: 'user',
-  softDelete: {
-    field: 'deletedAt',         // 标记字段
-    value: () => new Date(),    // 删除时写入的值（默认 true）
-    // query: { $ne: null },     // 可选，显式指定「未删除」的查询条件
-  },
-});
-```
-
-- `getSoftDeleteData()`：返回 `{ [field]: value }`，供 `del` 写入
-- `getSoftDeleteCond()`：返回 `{ [field]: { $ne: value } }`（或显式 `query`），自动并入 `search` 等查询条件
-
-## 自定义 Crud
-
-继承 `Cradle` 即可注入业务逻辑：
-
-```ts
-import { Cradle, regCrud, CrudError, CrudErrorCode } from 'hongs-crud';
-
-class UserCrud extends Cradle {
-  // 覆写 search：注入数据隔离 + 复用父类查询
-  search(params, ctx) {
-    if (!ctx.uid) {
-      throw new CrudError('login required', CrudErrorCode.UNPERMITTED);
-    }
-    params.find = { ...params.find, owner: ctx.uid };
-    return super.search(params, ctx);
-  }
-
-  // 覆写 create：自动补充归属字段
-  create(params, ctx) {
-    params.data.owner = ctx.uid;
-    return super.create(params, ctx);
-  }
-
-  // 追加自定义方法：需加入 callable 才能被 callFunc 放行
-  callable = [...super.prototype.callable ?? [], 'resetPassword'];
-  resetPassword(params, ctx) {
-    // ...业务逻辑
-  }
-}
-
-regCrud('user', new UserCrud(userSchema));
-```
-
-## 全局函数 Func
-
-无需绑定模型的工具方法（如健康检查、系统统计）通过 `regFunc` 注册，按裸名调用：
-
-```ts
-import { regFunc } from 'hogns-crud';
-
-regFunc('health.ping', () => ({ ok: true, ts: Date.now() }));
-regFunc('system.stats', async () => ({ uptime: process.uptime() }));
-
-// 调用：callFunc('health.ping', {}, ctx)
-```
-
-## 权限模型
-
-权限基于「角色 → 动作集合」的扁平映射：
-
-- `regRole(role, acts)`：登记角色及其全部可执行动作（动作名即 `callFunc` 的 `name`，如 `'user.search'`、`'health.ping'`）
-- `isPermitted(auth, roles)`：判断用户的角色集合中，是否任一角色包含该 `auth`
-- `callFunc` 在调用 `Func` 与 `Crud` 方法前都会自动校验权限，未通过抛 `UNPERMITTED`
-
-## CradleError
-
-统一错误类型，遵循 JSON-RPC 错误码约定：
-
-| Code | 枚举 | 含义 |
-|---|---|---|
-| `-32001` | `UNPERMITTED` | 无权限调用 |
-| `-32601` | `UNCALLABLE` | 找不到接口方法 |
-| `-32602` | `UNOPERABLE` | 找不到目标数据（不存在或不可操作） |
-
-```ts
-class CradleError extends Error {
-  constructor(message: string, code?: number, data?: Record<string, any>);
-  code?: number;
-  data?: Record<string, any>;
-}
-```
-
-## 辅助函数
-
-| 函数 | 用途 |
-|---|---|
-| `getValues(items, valueField?)` | 从 `EnumItem[]` 提取某字段的值数组 |
-| `mergeFind(...conds)` | 合并多个 find 条件（单个直接返回，多个用 `$and`，空返回 `{}`） |
-| `idAndFind(id, ...conds)` | 把 `id`（`string` 或 `string[]`）转为 ObjectId 查询并与 conds 合并 |
-| `isPermitted(auth, roles)` | 权限判定 |
-| `callFunc(name, params, ctx)` | 统一调度入口 |
-
-## 安装
+一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / schema` 两个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。
 
 ```bash
 npm install hongs-crud
-# 或
-pnpm add hongs-crud
 ```
+
+> 依赖（peer）：mongoose `^7 || ^8`
+
+---
+
+## 1. Schema 配置
+
+`hongs-crud` 围绕一个标准的 Mongoose `Schema` 展开，能力通过两种扩展叠加获得：
+
+- **字段内部自定义选项**：在字段 `options` 里直接写 `enumRef` / `dataRef` / `options` / `description` 等，全部是 Mongoose 的非保留字段，不会影响模型运行。
+- **Schema 第二个参数的扩展**：`collection` / `enums` / `softDelete` / `countable` / `limitDef` / `limitMax` / `timestamps` 等。
+
+下面是一个完整、最小的例子，包含所有扩展点：
+
+```ts
+import { Schema } from 'mongoose';
+
+/* ---------- 枚举字典：放到 Schema options.enums 里，字段通过 enumRef 引用 ---------- */
+const ENUMS = {
+  userStatus: [
+    { value: 'active',  label: '启用' },
+    { value: 'frozen',  label: '冻结' },
+    { value: 'closed',  label: '关闭' },
+  ],
+  userRole: [
+    { value: 'admin', label: '管理员' },
+    { value: 'user',  label: '普通用户' },
+  ],
+};
+
+const userSchema = new Schema(
+  /* ====================== 字段定义 ====================== */
+  {
+    /* ---- 普通字段 ---- */
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      maxlength: 32,
+      description: '登录名',                         // 非 mongoose 保留字段，schema() 会原样透出
+      options: { maxLength: 32, minLength: 3 },      // 字段内自定义的公开选项（前端/AI 可直接消费）
+    },
+    password: { type: String, required: true },
+
+    /* ---- 带枚举：通过 enumRef 指向 options.enums 的 key ---- */
+    status: {
+      type: String,
+      default: 'active',
+      enumRef: 'userStatus',                         // 1) 字符串：引用 enums[userStatus]
+      // enumRef: { enumName: 'userStatus' },        // 2) 或对象写法，当 valueKey/labelKey 非默认时可写
+      // enumRef: { enumName: 'userStatus', valueKey: 'value', labelKey: 'label' },
+    },
+    roles: {
+      type: [String],
+      default: ['user'],
+      enumRef: 'userRole',
+    },
+
+    /* ---- 带关联：dataRef 指向一个已注册的 Func（见 §3 注册器）---- */
+    orgId: {
+      type: Schema.Types.ObjectId,
+      dataRef: { method: 'org.options', valueKey: '_id', labelKey: 'name' },
+    },
+
+    /* ---- 软删除标记字段（见下 softDelete 扩展）---- */
+    isDeleted: { type: Boolean, default: false },
+  },
+
+  /* ====================== Schema 第二参数的 hongs-crud 扩展 ====================== */
+  {
+    collection: 'users',                 // ① 必填：集合名，同时用作 mongoose.model() 名称
+    timestamps: true,                    // mongoose 原生：自动维护 createdAt / updatedAt
+    softDelete: {                        // ③ 伪删除
+      field: 'isDeleted',                //   标记字段名
+      value: true,                       //   删除时写入的值，也可传 () => new Date()
+      // query: { isDeleted: false },    //   （可选）显式指定查询时过滤软删的条件，默认 $ne: value
+    },
+    enums: ENUMS,                        // ② 枚举字典，字段通过 enumRef 引用
+    countable: ['status', 'roles'],      // ④ 允许 counts() 统计的字段名白名单
+    limitDef : 20,                       // ⑤ search() 默认 limit, 未传时的默认值，默认 1；0 表示不限
+    limitMax : 500,                      // ⑥ search() limit 上限，超过会抛出异常，默认 1000；0 表示不限
+  },
+);
+```
+
+几个说明：
+
+| 扩展点 | 归属 | 作用 |
+|---|---|---|
+| `enumRef` | 字段内 | 把字段关联到 `options.enums` 中的某个字典；可写字符串或 `{ enumName, valueKey?, labelKey? }` |
+| `dataRef` | 字段内 | 声明该字段的值来源于某个已注册的 Func；写 `{ method, params?, valueKey?, labelKey? }` |
+| `options` | 字段内 | 自定义公开选项，前端/AI 可直接消费（表单校验等） |
+| `description` | 字段内 | 字段说明文字，schema() 会原样透出 |
+| `collection` | SchemaExtra | **必填**，集合名 |
+| `enums` | SchemaExtra | 枚举字典（`Record<string, {value,label}[]>`） |
+| `softDelete` | SchemaExtra | 伪删除配置；启用后 search / update / delete 自动注入条件 |
+| `countable` | SchemaExtra | 允许被 `counts()` 统计的字段名数组 |
+| `limitDef` | SchemaExtra | `search()` 默认 `limit`，默认 1，0 不限 |
+| `limitMax` | SchemaExtra | `search()` `limit` 上限，默认 1000，0 不限 |
+
+---
+
+## 2. 方法请求参数与返回结果
+
+6 个方法的入参与返回都是纯 POJO，可被直接 JSON 化，所有 `XxxParams` / `XxxResult` 均支持附加 `[key: string]: any` 的扩展字段。
+
+> 约定：`FindSpec = Record<string, any>`（MongoDB 查询对象）；`ColsSpec = Record<string, 0 | 1>`；`SortSpec = Record<string, 1 | -1>`。
+
+### 2.1 create
+
+```ts
+// 入参
+interface CreateParams {
+  data: Record<string, any>;            // 要写入的文档
+  [key: string]: any;
+}
+// 出参
+interface CreateResult {
+  id: string;                            // 新文档 _id（hex 字符串）
+  [key: string]: any;
+}
+```
+
+```ts
+await crud.create({
+  data: { username: 'alice', status: 'active' },
+}, ctx);
+// → { id: '66b...a01' }
+```
+
+### 2.2 update
+
+```ts
+interface UpdateParams {
+  id   : string | string[];              // 目标 _id 或 _id 数组（批量）
+  find?: FindSpec;                       // 附加查询条件（可做租户/归属隔离）
+  data : Record<string, any>;            // 要更新的字段
+  force?: boolean;                       // 缺省：目标 id 有不存在或不可变更 → 抛 CrudErrno.OWNER_MISMATCH
+                                         // true：静默跳过不可操作的 id，只处理可操作的
+  [key: string]: any;
+}
+interface UpdateResult {
+  count: number;                         // 实际内容发生变化的文档数（同值更新计入 0）
+  [key: string]: any;
+}
+```
+
+```ts
+await crud.update({
+  id: '66b...a01',
+  data: { status: 'frozen' },
+}, ctx);
+// → { count: 1 }
+```
+
+### 2.3 delete
+
+```ts
+interface DeleteParams {
+  id   : string | string[];              // 目标 _id 或 _id 数组
+  find?: FindSpec;                       // 附加查询条件
+  data?: Record<string, any>;            // （保留位，软删除场景可写扩展信息）
+  force?: boolean;                       // 作用同 update：缺省=严格，true=静默跳过
+  [key: string]: any;
+}
+interface DeleteResult {
+  count: number;                         // 硬删：实际删除条数；软删：实际被打标的条数（重复打标计 0）
+  [key: string]: any;
+}
+```
+
+- 若 schema 配置了 `softDelete`，此方法做「打标记」，并对查询侧自动注入过滤条件。
+- 未配置 `softDelete` 时做物理删除。
+
+### 2.4 search
+
+```ts
+interface SearchParams {
+  id   ?: string | string[];             // _id 或 _id 数组（便捷入口）
+  find ?: FindSpec;                      // 一般查询条件
+  cols ?: ColsSpec;                      // 字段投影，如 { name: 1, status: 1 }
+  sort ?: SortSpec;                      // 排序，如 { createdAt: -1 }
+  start?: number;                        // 跳过条数，默认 0
+  limit?: number;                        // 返回上限；缺省用 schema.limitDef（默认 1），超过 limitMax 会被截断
+  count?: 'all' | 'next' | 'only';       // 统计模式（见下）
+  [key: string]: any;
+}
+
+type SearchResult =
+  | { list: Document[]; count?: number; [k:string]: any }   // 非 count:'only'
+  | { count: number;            [k:string]: any };          // count:'only'
+```
+
+`count` 模式：
+
+| 值 | 行为 | 返回附带 |
+|---|---|---|
+| 未传 | 只查列表 | 仅 `{ list }` |
+| `'all'` | 列表 + `countDocuments` | `{ list, count }`（count = 总数） |
+| `'next'` | 列表 + 是否有下一页 | `{ list, count }`（count = 0 / 1） |
+| `'only'` | 仅统计，不要列表 | `{ count }`（无 list） |
+
+### 2.5 counts（扩展）
+
+对 `schema.countable` 里声明的字段做分组统计（`$group + $sort + $limit`），常用于搜索页左侧「筛选条」。
+
+```ts
+interface CountsParams {
+  find?: FindSpec;                              // 基础过滤条件
+  cols?: ColsSpec;                              // 只统计其中某些字段（白/黑名单模式）
+  sels?: Record<string, any[]>;                 // 联动已选：{ field: [v1, v2, ...] }，空数组视为没选
+  top ?: number | Record<string, number>;       // 每字段取前 N；默认 10；0 不限；也可按字段 { status: 5, roles: 20 }
+  [key: string]: any;
+}
+interface CountsResult {
+  counts: Record<string, Record<string, number>>;   // { field: { value1: cnt1, value2: cnt2, ... } }
+  count : number;                                   // 当前条件下的总文档数（应用 sels 已选项）
+  [key: string]: any;
+}
+```
+
+`sels` 联动规则（重点）：
+
+- `sels` 中任一非空数组都会转换为 `$in` 并入**总体过滤条件**，`CountsResult.count` 反映该总体过滤下的总文档数。
+- 对某个字段自身的统计：**不应用该字段自己的 sels**，保证「已选中的值也能看到它的计数」。
+- 对**其他**字段的统计：应用所有 `sels` 条件，结果相互联动。
+- `sels.field = []`（空数组）：视为没值，不参与任何条件。
+
+### 2.6 schema（扩展）
+
+把 Mongoose Schema 转译为调用方可消费的 `{ fields, enums }`，方便前端渲染及 AI 编排。
+
+```ts
+interface SchemaParams {
+  cols?: ColsSpec;                 // 可选：只返回指定字段
+  [key: string]: any;
+}
+interface SchemaResult {
+  fields: Record<string, {
+    type       : string;           // 'String' | 'Number' | 'Boolean' | 'Date' | 'ObjectId' | ...
+    default    ?: any;
+    required   ?: boolean;
+    immutable  ?: boolean;
+    description?: string;          // 字段内声明的描述
+    enumRef    ?: string | { enumName: string; valueKey?: string; labelKey?: string };
+    dataRef    ?: string | { method: string; params?: Record<string,any>; valueKey?: string; labelKey?: string };
+    options    ?: Record<string, any>;   // 字段内声明的公开选项
+    [k:string] : any;
+  }>;
+  enums: Record<string, { value: string; label: string; [k:string]: any }[]>;
+  [key: string]: any;
+}
+```
+
+---
+
+## 3. 注册器：crud / func / role
+
+三者都是扁平的全局注册表；`callFunc(name, params, ctx)` 会按「Func 名 → CrudName.MethodName」的顺序解析并执行。
+
+### 3.1 注册 Crud（模型）
+
+```ts
+import { Cradle, regCrud, getCrud, hasCrud, getCrudNames } from 'hongs-crud';
+
+const userSchema = new Schema({ /* ... */ }, { collection: 'users' });
+const userCrud = new Cradle(userSchema);
+
+// 注册：动作字符串 "user.search" / "user.create" ... 就指向该实例的对应方法
+regCrud('user', userCrud);
+
+hasCrud('user');           // → true
+getCrud('user');           // → userCrud 实例
+getCrudNames();            // → ['user', ...]
+```
+
+`Cradle` 默认的 `callable`（可被外部调度的方法白名单）为：
+
+```ts
+callable = ['create', 'update', 'delete', 'search', 'counts', 'schema'];
+```
+
+子类可覆写 `callable` 来收紧或扩展，不在其中的方法即便权限符合也不会被调度。
+
+### 3.2 注册 Func（全局函数）
+
+```ts
+import { regFunc, getFunc, hasFunc, getFuncNames } from 'hongs-crud';
+
+regFunc('health.ping',     () => ({ ok: true, ts: Date.now() }));
+regFunc('system.versions', () => ({ node: process.version }));
+regFunc('org.options',  async () => {
+  // 常见 dataRef 目标：返回 [{_id, name}, ...] 供下拉选项消费
+  return [{ _id: 'o1', name: '组织A' }, { _id: 'o2', name: '组织B' }];
+});
+```
+
+> 注意：上面 schema 例子中 `orgId.dataRef.method = 'org.options'` 就是指向这里注册的 Func。
+
+### 3.3 注册 Role（角色 → 动作集合）
+
+```ts
+import { regRole, hasRole, getRole, getRoleNames, isPermitted } from 'hongs-crud';
+
+// 一个角色对应可执行「动作字符串」集合（Func 名 或 CrudName.MethodName）
+regRole('admin', ['user.search', 'user.create', 'user.update', 'user.delete',
+                  'user.counts', 'user.schema',
+                  'health.ping', 'system.versions']);
+regRole('user',  ['user.search', 'health.ping']);
+regRole('guest', ['health.ping']);
+
+// 单个判断：任一角色包含动作即放行
+isPermitted('user.delete',   ['user']);   // → false
+isPermitted('user.delete',   ['admin']);  // → true
+isPermitted('health.ping',   ['guest']);  // → true
+```
+
+`acts` 参数可传 `string[]` 或 `Set<string>`。
+
+### 3.4 统一调度入口 `callFunc`
+
+```ts
+import { callFunc, CrudError, CrudErrno } from 'hongs-crud';
+
+// Context 至少可带 uid / roles，业务可自行扩展（[key:string]: any）
+const ctx = { uid: 'u1', roles: ['admin'], tenant: 't1' };
+
+// 1) 调模型方法（内部检查 callable + isPermitted）
+const list = await callFunc('user.search', {
+  find: { status: 'active' },
+  cols: { username: 1, status: 1 },
+  sort: { createdAt: -1 },
+  start: 0,
+  limit: 20,
+  count: 'all',
+}, ctx);
+// → { list: [...], count: N }
+
+// 2) 调全局函数
+const pong = await callFunc('health.ping', {}, ctx);
+```
+
+错误类型：
+
+```ts
+class CrudError extends Error {
+  code: number;
+  data?: Record<string, any>;
+  constructor(message: string, code?: number, data?: Record<string, any>);
+}
+
+enum CrudErrno {
+  METHOD_MISSING = -32601,   // 方法未注册 / 不在 callable
+  PARAMS_INVALID = -32602,   // 参数非法（如 search limit 超上限）
+  INTERNEL_ERROR = -32603,   // 内部错误
+  LOGIN_REQUIRED = -32001,   // 需要登录
+  RIGHT_DEPRIVED = -32003,   // 权限不足（isPermitted 拒绝）
+  OWNER_MISMATCH = -32009,   // 目标 id 不存在 / 非当前用户可操作的
+}
+```
+
+---
 
 ## License
 
