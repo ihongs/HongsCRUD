@@ -39,7 +39,7 @@ export function hasRole(role: string): boolean {
 
 export function getRole(role: string): Set<string> {
   if (!ROLES[role]) {
-    throw new CrudError(`Role "${role}" is not registered. Call regRole() first.`, CrudErrorCode.UNPERMITTED);
+    throw new CrudError(`Role "${role}" is not registered. Call regRole() first.`, CrudErrno.RIGHT_DEPRIVED);
   }
   return ROLES[role];
 }
@@ -62,7 +62,7 @@ export function hasFunc(name: string): boolean {
 
 export function getFunc(name: string): Func {
   if (!FUNCS[name]) {
-    throw new CrudError(`Func "${name}" is not registered. Call regFunc() first.`, CrudErrorCode.UNCALLABLE);
+    throw new CrudError(`Func "${name}" is not registered. Call regFunc() first.`, CrudErrno.METHOD_MISSING);
   }
   return FUNCS[name];
 }
@@ -85,7 +85,7 @@ export function hasCrud(name: string): boolean {
 
 export function getCrud(name: string): Crud {
   if (!CRUDS[name]) {
-    throw new CrudError(`Crud "${name}" is not registered. Call regCrud() first.`, CrudErrorCode.UNCALLABLE);
+    throw new CrudError(`Crud "${name}" is not registered. Call regCrud() first.`, CrudErrno.METHOD_MISSING);
   }
   return CRUDS[name];
 }
@@ -106,12 +106,13 @@ export class CrudError extends Error {
   }
 }
 
-export enum CrudErrorCode {
-  UNPERMITTED = -32001,
-  UNCALLABLE  = -32601,
-  UNOPERABLE  = -32602,
-  WRONGMETHOD = -32601,
-  WRONGPARAMS = -32602,
+export enum CrudErrno {
+  METHOD_MISSING = -32601,
+  PARAMS_INVALID = -32602,
+  INTERNEL_ERROR = -32603,
+  LOGIN_REQUIRED = -32001,
+  RIGHT_DEPRIVED = -32003,
+  OWNER_MISMATCH = -32009,
 }
 
 /* ---------- Cradle ---------- */
@@ -254,7 +255,7 @@ export class Cradle implements Crud {
         if (unoperable.length && !force) {
           throw new CrudError(
             `Cannot ${action}, ids not found or not permitted: ${unoperable.join(', ')}`,
-            CrudErrorCode.UNOPERABLE,
+            CrudErrno.OWNER_MISMATCH,
             { ids: unoperable },
           );
         }
@@ -321,7 +322,7 @@ export class Cradle implements Crud {
     if (limitMax > 0 && (limit === 0 || limit > limitMax)) {
       throw new CrudError(
         `Limit ${limit} exceeds max ${limitMax}`,
-        CrudErrorCode.WRONGPARAMS,
+        CrudErrno.PARAMS_INVALID,
         { limit, limitMax },
       );
     }
@@ -624,7 +625,7 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
   if (hasFunc(name)) {
     // 检查是否许可调用
     if (! isPermitted(name, ctx.roles || [])) {
-      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrorCode.UNPERMITTED);
+      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
     }
 
     return getFunc(name)(params, ctx);
@@ -644,11 +645,11 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
 
     // 检查是否许可调用
     if (! isPermitted(name, ctx.roles || [])) {
-      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrorCode.UNPERMITTED);
+      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
     }
 
     return (crud as any)[funcName].call(crud, params, ctx);
   }
 
-  throw new CrudError(`Method "${name}" is not registered.`, CrudErrorCode.UNCALLABLE);
+  throw new CrudError(`Method "${name}" is not registered.`, CrudErrno.METHOD_MISSING);
 }

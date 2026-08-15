@@ -5,15 +5,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
-    "./admin/*": "./dist/admin/*"
-  },
-  "typesVersions": {
-    "*": {
-      "admin/*": [
-        "dist/admin/*"
-      ]
-    }
+    ".": "./dist/index.js"
   },
   "files": [
     "dist"
