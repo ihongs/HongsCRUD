@@ -14,6 +14,8 @@ import type {
   UpdateResult,
   DeleteParams,
   DeleteResult,
+  CountsParams,
+  CountsResult,
   SchemaParams,
   SchemaResult,
   SchemaField,
@@ -116,7 +118,7 @@ export class Cradle implements Crud {
   private readonly _schema: Schema;
   private readonly _model: Model<any>;
 
-  callable = ['schema', 'search', 'create', 'update', 'delete'];
+  callable = ['schema', 'search', 'create', 'update', 'delete', 'counts'];
 
   constructor(
     schema: Schema,
@@ -174,6 +176,9 @@ export class Cradle implements Crud {
     const fields: Record<string, SchemaField> = {};
     const enums : Record<string, EnumItem []> = {};
     const menus : Record<string, EnumItem []> = (this.getSchema() as any).get('enums') || {};
+    const countableSet = new Set<string>(
+      ((this.getSchema() as any).get('countable') as string[] | undefined) || []
+    );
 
     for (const [key, path] of Object.entries(paths)) {
       if (key.startsWith('__')) continue;
@@ -205,6 +210,9 @@ export class Cradle implements Crud {
       }
       if (opts.description) {
         info.description = opts.description;
+      }
+      if (countableSet.has(fieldName)) {
+        info.countable = true;
       }
 
       // options：优先读字段内 options（自定义内部 options），再补齐 mongoose 的校验选项
@@ -250,7 +258,7 @@ export class Cradle implements Crud {
   search(params: SearchParams, _ctx: Context): SearchResult {
     const Model = this.getModel();
     const { id, find = {}, cols, sort, start = 0, limit = 1, count } = params;
-    const sdel = this.getSoftDeleteCond();
+    const sdel = this.getSoftDeleteCond( );
     const cond = idAndFind(id, find, sdel);
 
     const buildQuery = () => {
@@ -321,6 +329,140 @@ export class Cradle implements Crud {
         return (this.delAll(operable, data) as unknown as Promise<number>)
           .then(count => ({ count }));
       }) as unknown as DeleteResult;
+  }
+
+  /**
+   * 按字段值分布统计：对 cols 中指定的 countable 字段做 $group 计数。
+   *   1) 没在 sels 里 / sels 是空数组的字段：共享一次前置 $match（find+sdel+sels 全部），
+   *      在同一个 $facet 里批量统计，一次扫描完成。
+   *   2) sels 里有值（非空数组）的字段：逐个单独统计，每个的前置 $match 为
+   *      find+sdel + (sels 排除当前字段)，不应用自身已选条件。
+   *   top  限制每个字段返回的分组数量（按 count 降序取前 N）
+   */
+  counts(params: CountsParams, _ctx: Context): CountsResult {
+    const { find = {}, cols, sels, top = 10 } = params;
+    const sdel  = this.getSoftDeleteCond();
+    const Model = this.getModel();
+
+    // 基础条件：find + 软删除
+    const baseCond: Record<string, any> = { ...find };
+    if (sdel) Object.assign(baseCond, sdel);
+
+    // sels 转 $in 查询（'id' 还原为 '_id'，空数组视为没值，不生成任何条件）
+    const selConds: Record<string, any> = {};
+    if (sels) {
+      for (const [field, values] of Object.entries(sels)) {
+        if (!Array.isArray(values) || !values.length) continue;
+        const actual = field === 'id' ? '_id' : field;
+        selConds[actual] = { $in: values };
+      }
+    }
+
+    // total：应用全部条件（find + sdel + sels 中所有非空）
+    const totalCond    = { ...baseCond, ...selConds };
+    const totalPromise = Model.countDocuments(totalCond).exec();
+
+    // 取出所有 countable 字段（schema 第二参数 countable: string[]）
+    const countableFields: string[] =
+      ((this.getSchema() as any).get('countable') as string[] | undefined) || [];
+
+    // 若传了 cols，按白/黑名单过滤；否则统计全部 countable
+    let targets = countableFields;
+    if (cols) {
+      const mode = Object.values(cols).every(v => v === 1) ? 1 : 0;
+      targets = countableFields.filter(f =>
+        mode === 1 ? cols[f] === 1 : cols[f] !== 0
+      );
+    }
+
+    if (!targets.length) {
+      return totalPromise.then(total => ({ counts: {}, total })) as unknown as CountsResult;
+    }
+
+    // 分两组：
+    //   A. unselTargets  —— sels 中没选：共享扫描
+    //   B.   selTargets  —— sels 中有选：单独统计
+    const unselTargets: string[] = [];
+    const   selTargets: string[] = [];
+    for (const f of targets) {
+      const actual = f === 'id' ? '_id' : f;
+      if (selConds[actual]) selTargets.push(f); // 已选有值 → B 组
+      else                unselTargets.push(f); // 未选没值 → A 组
+    }
+
+    // 读取 top 工具函数
+    const topFor = (f: string): number | undefined => {
+      if (typeof top === 'number') return top;
+      if (top && typeof top === 'object' && top[f] !== undefined) return top[f];
+      return undefined;
+    };
+
+    // 生成单个字段的 group/sort/limit stages（不含 $match）
+    const buildGroupStages = (f: string): any[] => {
+      const actual = f === 'id' ? '_id' : f;
+      const stages: any[] = [
+        { $group  : { _id: '$' + actual, count: { $sum: 1 } } },
+        { $sort   : { count: -1 } },
+      ];
+      const topN = topFor(f);
+      if (topN !== undefined && topN > 0) stages.push({ $limit: topN });
+      return stages;
+    };
+
+    // 结果合并 + 格式化 Map（共享 Promise list 与单独 Promise list 合并输出）
+    const resultsByName: Record<string, Promise<any[]>> = {};
+
+    // ---- A 组：共享一次 $match（find + sdel + 所有 sels 条件），单 $facet 搞定 ----
+    if (unselTargets.length) {
+      const sharedFacet: Record<string, any[]> = {};
+      for (const f of unselTargets) {
+        sharedFacet[f] = buildGroupStages(f);
+      }
+      const sharedMatch = { ...baseCond, ...selConds };
+      const sharedPromise = Model.aggregate<{ [k: string]: any[] }>([
+        { $match: sharedMatch },
+        { $facet: sharedFacet },
+      ]).exec().then(r => (r && r[0]) || {});
+      for (const f of unselTargets) {
+        resultsByName[f] = sharedPromise.then(o => o[f] || []);
+      }
+    }
+
+    // ---- B 组：每个 selTarget 单独一次 aggregate，前置条件排除自身 ----
+    for (const f of selTargets) {
+      const actual = f === 'id' ? '_id' : f;
+      const fieldCond: Record<string, any> = { ...baseCond };
+      for (const [selActual, selIn] of Object.entries(selConds)) {
+        if (selActual === actual) continue; // 排除自身
+        fieldCond[selActual] = selIn;
+      }
+      const stages: any[] = [
+        { $match: fieldCond },
+        ...buildGroupStages(f),
+      ];
+      resultsByName[f] = Model.aggregate<any>(stages).exec();
+    }
+
+    // 等所有结果，按 targets 顺序组装 counts
+    const allNames = Object.keys(resultsByName);
+    const allProms = allNames.map(n => resultsByName[n]);
+    return Promise.all([totalPromise, Promise.all(allProms)]).then(([total, allLists]) => {
+      const listMap: Record<string, any[]> = {};
+      for (let i = 0; i < allNames.length; i++) listMap[allNames[i]] = allLists[i];
+
+      const counts: Record<string, Record<string, number>> = {};
+      for (const f of targets) {
+        const list = listMap[f] || [];
+        const map : Record<string, number> = {};
+        for (const g of list) {
+          // value 作 key，统一 String() 化（ObjectId / Date / null 都能作 key）
+          const k = g._id === null || g._id === undefined ? '' : String(g._id);
+          map[k] = g.count;
+        }
+        counts[f] = map;
+      }
+      return { counts, total };
+    }) as unknown as CountsResult;
   }
   
   /* ---------- core methods ---------- */

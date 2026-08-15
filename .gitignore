@@ -3,14 +3,11 @@ node_modules/
 
 # 编译产物
 dist/
+dist-test/
 
 # IDE
-.vscode/
 .trae/
-
-# 包产物
-*.tgz
-*.tar
+.vscode/
 
 # 系统垃圾
 .DS_Store
@@ -39,3 +36,7 @@ yarn.lock
 *.tmp
 *.swp
 *.swo
+
+# 包产物
+*.tgz
+*.tar

@@ -85,6 +85,8 @@ export interface SchemaField {
   required?: boolean;
   immutable?: boolean;
   description?: string;
+  /** 字段是否可被 counts 接口统计（schema 字段上声明 countable: true） */
+  countable?: boolean;
   /** 字段内声明的枚举引用名（对应 enums 的键） */
   enumRef?: string | EnumRef;
   /** 字段内声明的数据引用名（对应 FUNCS 的键） */
@@ -98,6 +100,8 @@ export interface SchemaExtra {
   collection?: string ;
   softDelete?: SoftDel;
   enums?: Record<string, EnumItem[]>;
+  /** 可统计字段名（schema 第二个参数扩展，代替逐字段 opts.countable） */
+  countable?: string[];
 }
 
 export interface EnumItem {
@@ -141,6 +145,7 @@ export interface Crud {
   create(params: CreateParams, ctx: Context): CreateResult;
   update(params: UpdateParams, ctx: Context): UpdateResult;
   delete(params: DeleteParams, ctx: Context): DeleteResult;
+  counts(params: CountsParams, ctx: Context): CountsResult;
 }
 
 export type Func = (params: Record<string, any>, ctx: Context) => any;

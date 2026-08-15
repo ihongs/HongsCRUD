@@ -20,7 +20,8 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:counts": "tsc -p tsconfig.test.json && node dist-test/test/counts.js"
   },
   "peerDependencies": {
     "mongoose": "^7.0.0 || ^8.0.0"
