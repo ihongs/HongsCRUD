@@ -140,12 +140,10 @@ export interface Context {
 
 export interface Crud {
   callable: string[];
-  schema(params: SchemaParams, ctx: Context): SchemaResult;
   search(params: SearchParams, ctx: Context): SearchResult;
   create(params: CreateParams, ctx: Context): CreateResult;
   update(params: UpdateParams, ctx: Context): UpdateResult;
   delete(params: DeleteParams, ctx: Context): DeleteResult;
-  counts(params: CountsParams, ctx: Context): CountsResult;
 }
 
 export type Func = (params: Record<string, any>, ctx: Context) => any;
