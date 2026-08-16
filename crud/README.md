@@ -1,6 +1,6 @@
 # hongs-crud
 
-一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / import / schema` 三个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。
+一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。
 
 源码：[](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
@@ -205,9 +205,9 @@ const userSchema = new Schema(
 - 已选字段不应用自己的 `sels` 条件（避免无法继续筛选该字段其他选项）。
 - 其他字段应用所有 `sels` 条件，结果相互联动。
 
-### 2.6 import（扩展）
+### 2.6 upsert（扩展）
 
-批量导入（upsert）：逐行根据 `uks` 检查是否存在，存在则更新，不存在则添加。单行失败不中断，记入 `errors`。
+批量 upsert：逐行根据 `uks` 检查是否存在，存在则更新，不存在则添加。单行失败不中断，记入 `errors`。
 
 ```ts
 // 请求
@@ -285,7 +285,7 @@ getCrudNames();            // → ['user', ...]
 `Cradle` 默认的 `callable`（可被外部调度的方法白名单）为：
 
 ```ts
-callable = ['create', 'update', 'delete', 'search', 'counts', 'import', 'schema'];
+callable = ['create', 'update', 'delete', 'search', 'counts', 'upsert', 'schema'];
 ```
 
 子类可覆写 `callable` 来收紧或扩展，不在其中的方法即便权限符合也不会被调度。

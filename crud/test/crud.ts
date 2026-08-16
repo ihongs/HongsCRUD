@@ -40,8 +40,8 @@ async function callDelete(params: any): Promise<any> {
 async function callSchema(params?: any): Promise<any> {
   return await (crud.schema(params || {}, { uid: 'tester' }) as unknown as Promise<any>);
 }
-async function callImport(params: any): Promise<any> {
-  return await (crud.import(params, { uid: 'tester' }) as unknown as Promise<any>);
+async function callUpsert(params: any): Promise<any> {
+  return await (crud.upsert(params, { uid: 'tester' }) as unknown as Promise<any>);
 }
 
 // 深度相等比较（不关心对象 key 顺序）
@@ -271,14 +271,14 @@ async function main(): Promise<void> {
   const remainCount = await callSearch({ find: { status: 'draft' }, count: 'all' });
   assert('count:all 也排除软删', remainCount.count, 1);
 
-  // ---------- 7) import ----------
-  console.log('\n--- 7) import() ---');
+  // ---------- 7) upsert ----------
+  console.log('\n--- 7) upsert() ---');
   await crud.getModel().deleteMany({});
 
   // 先创建一条，拿到已存在的 _id 用于更新测试
   const existDoc = await callCreate({ name: 'exist', status: 'draft', age: 18 });
 
-  const imp = await callImport({
+  const imp = await callUpsert({
     list: [
       // 没 _id → 添加
       { name: 'new1', status: 'draft', age: 22 },
@@ -290,9 +290,9 @@ async function main(): Promise<void> {
       { status: 'invalid' },
     ],
   });
-  assert('import created = 1', imp.created, 1);
-  assert('import updated = 1', imp.updated, 1);
-  assert('import errors = 2', imp.errors.length, 2);
+  assert('upsert created = 1', imp.created, 1);
+  assert('upsert updated = 1', imp.updated, 1);
+  assert('upsert errors = 2', imp.errors.length, 2);
 
   // 有 _id 但找不到：只有 message，无 errors
   const errNotFound = imp.errors.find((e: any) => e.index === 2);
@@ -306,12 +306,12 @@ async function main(): Promise<void> {
 
   // 验证更新生效
   const updatedDoc = await callSearch({ id: existDoc.id });
-  assert('import 更新后 age = 33', updatedDoc.list[0].age, 33);
-  assert('import 更新后 name = exist-updated', updatedDoc.list[0].name, 'exist-updated');
+  assert('upsert 更新后 age = 33', updatedDoc.list[0].age, 33);
+  assert('upsert 更新后 name = exist-updated', updatedDoc.list[0].name, 'exist-updated');
 
   // 验证添加生效
   const addedDoc = await callSearch({ find: { name: 'new1' } });
-  assert('import 添加 new1 成功', addedDoc.list.length, 1);
+  assert('upsert 添加 new1 成功', addedDoc.list.length, 1);
 
   console.log(`\n=== Result: ${pass} passed, ${fail} failed ===`);
   await mongoose.disconnect();

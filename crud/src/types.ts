@@ -74,18 +74,18 @@ export interface CountsResult {
   [key: string]: any;
 }
 
-export interface ImportParams {
+export interface UpsertParams {
   uks?: string[];
   list: Record<string, any>[];
 }
 
-export interface ImportResult {
+export interface UpsertResult {
   created: number;
   updated: number;
-  errors?: ImportError[];
+  errors?: UpsertError[];
 }
 
-export interface ImportError {
+export interface UpsertError {
   index: number;
   message: string;
   errors?: Record<string, any>;

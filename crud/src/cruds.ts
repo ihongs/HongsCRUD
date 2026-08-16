@@ -14,11 +14,11 @@ import type {
   UpdateResult,
   DeleteParams,
   DeleteResult,
-  ImportParams,
-  ImportResult,
-  ImportError,
   CountsParams,
   CountsResult,
+  UpsertParams,
+  UpsertResult,
+  UpsertError,
   SchemaParams,
   SchemaResult,
   SchemaField,
@@ -124,7 +124,7 @@ export class Cradle implements Crud {
   private readonly _schema: Schema;
   private readonly _model: Model<any>;
 
-  callable = ['create', 'update', 'delete', 'search', 'counts', 'import', 'schema'];
+  callable = ['create', 'update', 'delete', 'search', 'counts', 'upsert', 'schema'];
 
   constructor(
     schema: Schema,
@@ -497,15 +497,15 @@ export class Cradle implements Crud {
     }) as unknown as CountsResult;
   }
 
-  import(params: ImportParams, _ctx: Context): ImportResult {
+  upsert(params: UpsertParams, _ctx: Context): UpsertResult {
     const { uks = ['_id'], list } = params;
     const  sdel = this.getSoftDeleteCond();
     const Model = this.getModel();
 
-    return (async (): Promise<ImportResult> => {
+    return (async (): Promise<UpsertResult> => {
       let   created = 0;
       let   updated = 0;
-      const errors  : ImportError[] = [];
+      const errors  : UpsertError[] = [];
 
       const isIdUks = uks.length === 1 && uks[0] === '_id';
 
@@ -560,7 +560,7 @@ export class Cradle implements Crud {
       }
 
       return { created, updated, errors };
-    })() as unknown as ImportResult;
+    })() as unknown as UpsertResult;
   }
 
   schema(params: SchemaParams, _ctx: Context): SchemaResult {
