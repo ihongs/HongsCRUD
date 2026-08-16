@@ -70,7 +70,7 @@ export interface CountsParams {
 
 export interface CountsResult {
   counts: Record<string, Record<any, number>>; // 统计量 {field: {value1: 10, value2: 20, ...}}
-  count : number; // 总数量
+  count : number; // 总数，范围：find + sels
   [key: string]: any;
 }
 
@@ -90,15 +90,18 @@ export interface SchemaField {
   default?: any;
   required?: boolean;
   immutable?: boolean;
-  description?: string;
-  /** 字段是否可被 counts 接口统计（schema 字段上声明 countable: true） */
+  /** 字段值不可见，对应 select = false，如 password: {type: String, select: false} */
+  invisible?: boolean;
+  /** 字段是否可被 counts 接口统计，对应 schema 扩展选项 countable: [field] */
   countable?: boolean;
-  /** 字段内声明的枚举引用名（对应 enums 的键） */
+  /** 字段内声明的枚举引用名，对应 enums 的键 */
   enumRef?: string | EnumRef;
-  /** 字段内声明的数据引用名（对应 FUNCS 的键） */
+  /** 字段内声明的数据引用名，对应 FUNCS 的键 */
   dataRef?: string | DataRef;
-  /** 字段内声明的公开选项（给前端使用，非 mongoose 保留） */
+  /** 字段内声明的公开选项（给前端使用，非 mongoose 的） */
   options?: Record<string, any>;
+  /** 字段描述 */
+  description?: string;
 }
 
 /** Schema options 扩展结构（仅供参考） */
@@ -106,7 +109,7 @@ export interface SchemaExtra {
   collection?: string ;
   softDelete?: SoftDel;
   enums?: Record<string, EnumItem[]>;
-  /** 可统计字段名（schema 第二个参数扩展，代替逐字段 opts.countable） */
+  /** 可统计字段名，对应 Cradle.counts() 中可统计的字段 */
   countable?: string[];
   /** search 默认 limit，未传时的取值，默认 1；设为 0 表示不限 */
   limitDef?: number;

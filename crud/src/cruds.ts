@@ -522,6 +522,9 @@ export class Cradle implements Crud {
       if (opts.immutable && typeof opts.immutable !== 'function') {
         info.immutable = true;
       }
+      if (opts.select === false) {
+        info.invisible = true;
+      }
       if (opts.description) {
         info.description = opts.description;
       }
