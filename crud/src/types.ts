@@ -74,6 +74,23 @@ export interface CountsResult {
   [key: string]: any;
 }
 
+export interface ImportParams {
+  uks?: string[];
+  list: Record<string, any>[];
+}
+
+export interface ImportResult {
+  created: number;
+  updated: number;
+  errors?: ImportError[];
+}
+
+export interface ImportError {
+  index: number;
+  message: string;
+  errors?: Record<string, any>;
+}
+
 export interface SchemaParams {
   cols?: ColsSpec;
   [key: string]: any;

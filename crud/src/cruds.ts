@@ -14,6 +14,9 @@ import type {
   UpdateResult,
   DeleteParams,
   DeleteResult,
+  ImportParams,
+  ImportResult,
+  ImportError,
   CountsParams,
   CountsResult,
   SchemaParams,
@@ -121,7 +124,7 @@ export class Cradle implements Crud {
   private readonly _schema: Schema;
   private readonly _model: Model<any>;
 
-  callable = ['create', 'update', 'delete', 'search', 'counts', 'schema'];
+  callable = ['create', 'update', 'delete', 'search', 'counts', 'import', 'schema'];
 
   constructor(
     schema: Schema,
@@ -492,6 +495,72 @@ export class Cradle implements Crud {
       }
       return { counts, count: total };
     }) as unknown as CountsResult;
+  }
+
+  import(params: ImportParams, _ctx: Context): ImportResult {
+    const { uks = ['_id'], list } = params;
+    const  sdel = this.getSoftDeleteCond();
+    const Model = this.getModel();
+
+    return (async (): Promise<ImportResult> => {
+      let   created = 0;
+      let   updated = 0;
+      const errors  : ImportError[] = [];
+
+      const isIdUks = uks.length === 1 && uks[0] === '_id';
+
+      for (let i = 0; i < list.length; i ++) {
+        const data = list[i];
+        try {
+          // uks 为 ['_id'] 且数据没有 _id：直接添加
+          if (isIdUks && (data._id === undefined || data._id === null || data._id === '')) {
+            await (this.add(data) as unknown as Promise<string>);
+            created ++;
+            continue;
+          }
+
+          // 构建唯一键查询条件
+          const cond: Record<string, any> = {};
+          if (isIdUks) {
+            cond._id = data._id;
+          } else {
+            for (const uk of uks) cond[uk] = data[uk];
+          }
+          const fullCond = sdel ? { ...cond, ...sdel } : cond;
+
+          const exist: any = await Model.findOne(fullCond).select('_id').lean().exec();
+
+          if (exist) {
+            // 存在则更新：去掉 _id 避免修改不可变字段
+            const setData = { ...data };
+            delete setData._id;
+            await (this.set(String(exist._id), setData) as unknown as Promise<number>);
+            updated ++;
+          } else if (isIdUks) {
+            // 有 _id 但找不到：报错
+            errors.push({ index: i, message: `Item with _id(${data._id}) not found` });
+          } else {
+            // 按 uks 但找不到：添加
+            await (this.add(data) as unknown as Promise<string>);
+            created ++;
+          }
+        } catch (e: any) {
+          // ValidationError 记录 message + errors；其他只记 message
+          const message = e?.message ?? String(e);
+          if (e?.name === 'ValidationError' && e.errors) {
+            const fieldErrors: Record<string, any> = {};
+            for (const [field, info] of Object.entries<any>(e.errors)) {
+              fieldErrors[field] = info.message;
+            }
+            errors.push({ index: i, message, errors: fieldErrors });
+          } else {
+            errors.push({ index: i, message });
+          }
+        }
+      }
+
+      return { created, updated, errors };
+    })() as unknown as ImportResult;
   }
 
   schema(params: SchemaParams, _ctx: Context): SchemaResult {
