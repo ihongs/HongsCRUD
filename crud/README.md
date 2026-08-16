@@ -301,33 +301,28 @@ isPermitted('health.ping',   ['guest']);  // → true
 ```ts
 import { callFunc, CrudError, CrudErrno } from 'hongs-crud';
 
-// Context 至少可带 uid / roles，业务可自行扩展（[key:string]: any）
-const ctx = { uid: 'u1', roles: ['admin'], tenant: 't1' };
+// 以 RPC 调度函数举例
+async function dispatch(req: RpcRequest, ctx: Context): Promise<RpcResponse> {
+  const id = req.id ?? null;
 
-// 1) 调模型方法（内部检查 callable + isPermitted）
-const list = await callFunc('user.search', {
-  find: { status: 'active' },
-  cols: { username: 1, status: 1 },
-  sort: { createdAt: -1 },
-  start: 0,
-  limit: 20,
-  count: 'all',
-}, ctx);
-// → { list: [...], count: N }
+  if (typeof req.method !== 'string') {
+    return { jsonrpc: '2.0', error: {code: -32600, message: 'Invalid Request: method required!'}, id };
+  }
 
-// 2) 调全局函数
-const pong = await callFunc('health.ping', {}, ctx);
+  try {
+    const result = await callFunc(req.method, req.params || {}, ctx);
+    return { jsonrpc: '2.0', result, id };
+  } catch (e: any) {
+    if (e instanceof CrudError) {
+      return { jsonrpc: '2.0', error: {code: e.code || -32603, message: e.message, data: e.data}, id };
+    }
+    return { jsonrpc: '2.0', error: {code: -32603, message: e?.message || 'Internal error!'}, id };
+  }
+}
 ```
 
-错误类型：
-
+错误 code 枚举：
 ```ts
-class CrudError extends Error {
-  code: number;
-  data?: Record<string, any>;
-  constructor(message: string, code?: number, data?: Record<string, any>);
-}
-
 enum CrudErrno {
   METHOD_MISSING = -32601,   // 方法缺失 / 不在 callable
   PARAMS_INVALID = -32602,   // 参数非法
