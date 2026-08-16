@@ -1,6 +1,6 @@
 # hongs-crud
 
-一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / schema` 两个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。
+一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / import / schema` 三个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。
 
 源码：[](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
@@ -106,7 +106,7 @@ const userSchema = new Schema(
 | `limitDef` | SchemaExtra | `search()` 默认 `limit`，默认 1，0 不限 |
 | `limitMax` | SchemaExtra | `search()` `limit` 上限，默认 1000，0 不限，超过抛异常 `CrudErrno.PARAMS_INVALID` |
 
-然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `counts` / `schema` 能力。
+然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `counts` / `import` / `schema` 能力。
 
 ---
 
@@ -205,7 +205,36 @@ const userSchema = new Schema(
 - 已选字段不应用自己的 `sels` 条件（避免无法继续筛选该字段其他选项）。
 - 其他字段应用所有 `sels` 条件，结果相互联动。
 
-### 2.6 schema（扩展）
+### 2.6 import（扩展）
+
+批量导入（upsert）：逐行根据 `uks` 检查是否存在，存在则更新，不存在则添加。单行失败不中断，记入 `errors`。
+
+```ts
+// 请求
+{
+  uks: ['_id'],                       // 默认 ['_id']；有 _id 更新、没 _id 添加
+  list: [
+    { name: 'alice', age: 20 },                       // 没 _id → 添加
+    { _id: '66b...a01', name: 'alice', age: 21 },     // 有 _id 且存在 → 更新
+    { _id: '66b...xxx', name: 'ghost' },              // 有 _id 但不存在 → 报错
+  ],
+}
+
+// 返回
+{
+  created: 1,
+  updated: 1,
+  errors: [
+    { index: 2, message: 'Item with _id "66b...xxx" not found' },
+  ],
+}
+```
+
+- `uks` 默认 `['_id']`：有 `_id` 就更新、没 `_id` 就添加；有 `_id` 但找不到记入 `errors`。
+- `uks` 为其他字段（如 `['username']`）时：按 `uks` 查到则更新，查不到则添加（upsert 语义，不报错）。
+- 校验失败的行：`errors` 项含 `message` + `errors`（字段级明细）；其他错误只记 `message`。
+
+### 2.7 schema（扩展）
 
 把 Mongoose Schema 转译为 `{ fields, enums }`，供前端渲染及 AI 编排。
 
@@ -218,7 +247,7 @@ const userSchema = new Schema(
   fields: {
     username: { type: 'String', required: true, description: '登录名' },
     password: { type: 'String', required: true, invisible: true },
-    status  : { type: 'String', default: 'active', countable: true, enumRef: 'userStatus' },
+    status: { type: 'String', default: 'active', countable: true, enumRef: 'userStatus' },
   },
   enums: {
     userStatus: [
@@ -256,7 +285,7 @@ getCrudNames();            // → ['user', ...]
 `Cradle` 默认的 `callable`（可被外部调度的方法白名单）为：
 
 ```ts
-callable = ['create', 'update', 'delete', 'search', 'counts', 'schema'];
+callable = ['create', 'update', 'delete', 'search', 'counts', 'import', 'schema'];
 ```
 
 子类可覆写 `callable` 来收紧或扩展，不在其中的方法即便权限符合也不会被调度。
