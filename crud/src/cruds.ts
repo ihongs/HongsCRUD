@@ -599,8 +599,11 @@ export class Cradle implements Crud {
       if (opts.immutable && typeof opts.immutable !== 'function') {
         info.immutable = true;
       }
-      if (opts.invisible || opts.select === false) {
-        info.invisible = true;
+      if (opts.select === false) {
+        info.select = false;
+      }
+      if (opts.assign === false) {
+        info.assign = false;
       }
       if (opts.countable) {
         info.countable = true;
@@ -736,12 +739,12 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
 
 /**
  * 微调 Schema:
- * 1. invisible: true 对应 select: false。
- *    注意：只能调用 SchemaType.select(false) 设置内部 `selected` 状态。
- * 2. softDelete: true 简写规范化为 { field: 'isDeleted' }。
+ * 1. softDelete: true 简写规范化为 { field: 'isDeleted' }。
  *    若未自定义 isDeleted 字段则加上 isDeleted: { type: Boolean, default: false }。
  */
 mongoose.plugin(function(schema: Schema): void {
+  /*
+  // 原来想给 invisble: true 对应 select: false，不需要了
   const add = schema.add.bind(schema) as typeof schema.add;
   const fix = (schema: Schema): void => {
     schema.eachPath((_name: string, type: SchemaType) => {
@@ -759,6 +762,7 @@ mongoose.plugin(function(schema: Schema): void {
     return rs;
   };
   fix(schema);
+  */
 
   // softDelete: true 简写规范化为 { field: 'isDeleted' }，并自动补充字段（已自定义则跳过）
   if ((schema as any).get('softDelete') === true) {

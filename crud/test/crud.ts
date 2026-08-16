@@ -15,7 +15,7 @@ const schema = new mongoose.Schema({
   status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft' },
   age   : { type: Number, min: 0, max: 150 },
   tags  : { type: [String] },
-  secret: { type: String, invisible: true },   // invisible: true → 插件同步为 select: false，search 默认不返回
+  secret: { type: String, select: false },
   isDeleted: { type: Boolean, default: false },
 }, {
   collection: COLL_NAME,
@@ -166,11 +166,10 @@ async function main(): Promise<void> {
   const byIds = await callSearch({ limit: 100, id: [c1.id, c2.id] });
   assert('按 id 数组查到 2 条', byIds.list.length, 2);
 
-  // invisible: true 字段经插件同步为 select: false，search 默认不返回
-  // 注意：c1 创建时已写入 secret='s1'，若插件未把 invisible→select:false，这里会读到 's1' 导致断言失败
+  // select: false，search 默认不返回
   const secretHidden = await callSearch({ id: c1.id });
   const secretDoc    = secretHidden.list[0].toObject ? secretHidden.list[0].toObject() : secretHidden.list[0];
-  assertOk('invisible:true 字段默认不返回（secret 不可见）', secretDoc.secret === undefined);
+  assertOk('select:false 字段默认不返回（secret 不可见）', secretDoc.secret === undefined);
 
   // ---------- 4) update ----------
   console.log('\n--- 4) update() ---');

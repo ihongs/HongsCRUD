@@ -50,8 +50,12 @@ const userSchema = new Schema(
     },
     password: {
       type: String,
-      select: false,                                 // select: false 在 schema() 中会透出为 invisible: true
+      select: false,
       required: true,
+    },
+    passsalt: {
+      type: String,
+      assign: false,                                 // 只读，系统字段，用户不可赋值
     },
     status: {
       type: String,
@@ -97,16 +101,16 @@ const userSchema = new Schema(
 |---|---|---|
 | `options` | 字段内 | 自定义公开选项，AI 和前端可直接消费（表单渲染、校验等） |
 | `enumRef` | 字段内 | 把字段关联到 `options.enums` 中的某个字典；可写字符串或 `{ enumName, valueKey?, labelKey? }` |
-| `dataRef` | 字段内 | 声明该字段的值来源于某个已注册的 Func 或 Crud 方法；可写字符串或 `{ method, params?, valueKey?, labelKey? }` |
+| `dataRef` | 字段内 | 声明该字段的值来源于某个 Func 或 Crud 方法；可写字符串或 `{ method, params?, valueKey?, labelKey? }` |
 | `countable` | 字段内 | 写 `countable: true` 表示该字段可被 `counts()` 统计 |
 | `description` | 字段内 | 字段说明文字，schema() 会原样透出 |
-| `collection` | SchemaExtra | **必填**，集合名 |
-| `softDelete` | SchemaExtra | 伪删除配置；启用后 search / update / delete 自动注入条件 |
-| `enums` | SchemaExtra | 枚举字典（`Record<string, {value, label}[]>`） |
-| `limitDef` | SchemaExtra | `search()` 默认 `limit`，默认 1，0 不限 |
-| `limitMax` | SchemaExtra | `search()` `limit` 上限，默认 1000，0 不限，超过抛异常 `CrudErrno.PARAMS_INVALID` |
+| `collection` | Schema 扩展 | **必填**，集合名 |
+| `softDelete` | Schema 扩展 | 伪删除配置；启用后 search / update / delete 自动注入条件 |
+| `enums` | Schema 扩展 | 枚举字典（`Record<string, {value, label}[]>`） |
+| `limitDef` | Schema 扩展 | `search()` 默认 `limit`，默认 1，0 不限 |
+| `limitMax` | Schema 扩展 | `search()` `limit` 上限，默认 1000，0 不限，超过抛异常 `CrudErrno.PARAMS_INVALID` |
 
-然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `counts` / `import` / `schema` 能力。
+然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `counts` / `upsert` / `schema` 能力。
 
 ---
 
@@ -246,7 +250,8 @@ const userSchema = new Schema(
 {
   fields: {
     username: { type: 'String', required: true, description: '登录名' },
-    password: { type: 'String', required: true, invisible: true },
+    password: { type: 'String', required: true, select: false },
+    passsalt: { type: 'String', assign: false },
     status: { type: 'String', default: 'active', countable: true, enumRef: 'userStatus' },
   },
   enums: {
@@ -258,7 +263,7 @@ const userSchema = new Schema(
 }
 ```
 
-`fields` 里每个字段可能透出：`type` / `default` / `required` / `immutable` / `invisible`（select:false 标记）/ `countable` / `description` / `enumRef` / `dataRef` / `options` 等。
+`fields` 里每个字段可能透出：`type` / `default` / `required` / `immutable` / `select` / `assign` / `countable` / `description` / `enumRef` / `dataRef` / `options` 等。
 
 ---
 

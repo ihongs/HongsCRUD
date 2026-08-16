@@ -107,8 +107,10 @@ export interface SchemaField {
   default?: any;
   required?: boolean;
   immutable?: boolean;
-  /** 字段值不可见，对应 select: false，如 password: {type: String, select: false} */
-  invisible?: boolean;
+  /** select === false 不可见（秘密字段），如 secretField: {type: String, select: false} */
+  select?: boolean;
+  /** assign === false 不可写（系统字段），如 systemField: {type: String, assign: false} */
+  assign?: boolean;
   /** 字段是否可被 counts() 统计，对应 countable: true  */
   countable?: boolean;
   /** 字段内声明的枚举引用名，对应 enums 的键 */
