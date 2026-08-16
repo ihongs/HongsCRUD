@@ -234,6 +234,7 @@ export class Cradle implements Crud {
 
   /**
    * 检查可操作的文档
+   * action 可选 update,delete
    */
   chkIds(ids: string[], find?: Record<string, any>, force?: boolean, action: string = 'update'): Promise<string[]> {
     const Model = this.getModel();
@@ -380,9 +381,13 @@ export class Cradle implements Crud {
     const totalCond    = { ...baseCond, ...selConds };
     const totalPromise = Model.countDocuments(totalCond).exec();
 
-    // 取出所有 countable 字段
-    const countableFields: string[] =
-      ((this.getSchema() as any).get('countable') as string[] | undefined) || [];
+    // 取出所有 countable: true 的字段
+    const countableFields: string[] = [];
+    for (const [key, path] of Object.entries(this.getSchema().paths)) {
+      if (key.startsWith('__')) continue;
+      const opts = (path as any).options || {};
+      if (opts.countable) countableFields.push(key === '_id' ? 'id' : key);
+    }
 
     // 若传了 cols，按白/黑名单过滤；否则统计全部 countable
     let targets = countableFields;
@@ -490,9 +495,6 @@ export class Cradle implements Crud {
     const fields: Record<string, SchemaField> = {};
     const enums : Record<string, EnumItem []> = {};
     const menus : Record<string, EnumItem []> = (this.getSchema() as any).get('enums') || {};
-    const countableSet = new Set<string>(
-      ((this.getSchema() as any).get('countable') as string[] | undefined) || []
-    );
 
     for (const [key, path] of Object.entries(paths)) {
       if (key.startsWith('__')) continue;
@@ -525,11 +527,11 @@ export class Cradle implements Crud {
       if (opts.select === false) {
         info.invisible = true;
       }
+      if (opts.countable) {
+        info.countable = true;
+      }
       if (opts.description) {
         info.description = opts.description;
-      }
-      if (countableSet.has(fieldName)) {
-        info.countable = true;
       }
 
       // options：优先读字段内 options（自定义内部 options），再补齐 mongoose 的校验选项

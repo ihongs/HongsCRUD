@@ -90,15 +90,15 @@ export interface SchemaField {
   default?: any;
   required?: boolean;
   immutable?: boolean;
-  /** 字段值不可见，对应 select = false，如 password: {type: String, select: false} */
+  /** 字段值不可见，对应 select: false，如 password: {type: String, select: false} */
   invisible?: boolean;
-  /** 字段是否可被 counts 接口统计，对应 schema 扩展选项 countable: [field] */
+  /** 字段是否可被 counts() 统计，对应 countable: true  */
   countable?: boolean;
   /** 字段内声明的枚举引用名，对应 enums 的键 */
   enumRef?: string | EnumRef;
   /** 字段内声明的数据引用名，对应 FUNCS 的键 */
   dataRef?: string | DataRef;
-  /** 字段内声明的公开选项（给前端使用，非 mongoose 的） */
+  /** 字段内声明的公开选项（非 mongoose 的） */
   options?: Record<string, any>;
   /** 字段描述 */
   description?: string;
@@ -109,8 +109,6 @@ export interface SchemaExtra {
   collection?: string ;
   softDelete?: SoftDel;
   enums?: Record<string, EnumItem[]>;
-  /** 可统计字段名，对应 Cradle.counts() 中可统计的字段 */
-  countable?: string[];
   /** search 默认 limit，未传时的取值，默认 1；设为 0 表示不限 */
   limitDef?: number;
   /** search 最大 limit 上限，超过会被截断，默认 1000；设为 0 表示不限 */

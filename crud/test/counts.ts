@@ -9,15 +9,14 @@ const MONGO_URI = 'mongodb://127.0.0.1:27017/test';
 const DB_NAME   = 'test';
 const COLL_NAME = 'testCounts';
 
-// schema 声明两个 countable 字段
+// schema 声明两个 countable 字段（字段内部 countable: true）
 const schema = new mongoose.Schema({
-  name  : { type: String  },
-  status: { type: String, enum: ['draft', 'published', 'archived'] },
-  role  : { type: String, enum: ['admin', 'user'] },
+  name  : { type: String },
+  status: { type: String, enum: ['draft', 'published', 'archived'], countable: true },
+  role  : { type: String, enum: ['admin', 'user'], countable: true },
   age   : { type: Number },
 }, {
   collection: COLL_NAME,
-  countable : ['status', 'role'],   // schema 第二参数扩展
 } as any);
 
 const crud = new Cradle(schema as any);
