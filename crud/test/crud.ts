@@ -15,6 +15,7 @@ const schema = new mongoose.Schema({
   status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft' },
   age   : { type: Number, min: 0, max: 150 },
   tags  : { type: [String] },
+  secret: { type: String, invisible: true },   // invisible: true → 插件同步为 select: false，search 默认不返回
   isDeleted: { type: Boolean, default: false },
 }, {
   collection: COLL_NAME,
@@ -90,7 +91,7 @@ async function main(): Promise<void> {
 
   // ---------- 2) create ----------
   console.log('\n--- 2) create() ---');
-  const c1 = await callCreate({ name: 'alice', status: 'draft'   , age: 20, tags: ['a', 'b'] });
+  const c1 = await callCreate({ name: 'alice', status: 'draft'   , age: 20, tags: ['a', 'b'], secret: 's1' });
   const c2 = await callCreate({ name: 'bob'  , status: 'published', age: 25, tags: ['b'] });
   const c3 = await callCreate({ name: 'carol', status: 'archived' , age: 30, tags: [] });
   assertOk('c1 返回 id', typeof c1.id === 'string' && c1.id.length > 0);
@@ -162,6 +163,12 @@ async function main(): Promise<void> {
   const byIds = await callSearch({ limit: 100, id: [c1.id, c2.id] });
   assert('按 id 数组查到 2 条', byIds.list.length, 2);
 
+  // invisible: true 字段经插件同步为 select: false，search 默认不返回
+  // 注意：c1 创建时已写入 secret='s1'，若插件未把 invisible→select:false，这里会读到 's1' 导致断言失败
+  const secretHidden = await callSearch({ id: c1.id });
+  const secretDoc    = secretHidden.list[0].toObject ? secretHidden.list[0].toObject() : secretHidden.list[0];
+  assertOk('invisible:true 字段默认不返回（secret 不可见）', secretDoc.secret === undefined);
+
   // ---------- 4) update ----------
   console.log('\n--- 4) update() ---');
   // 单条更新
@@ -194,7 +201,7 @@ async function main(): Promise<void> {
     assertOk('update 不存在 id (不传 force) 抛 UNOPERABLE', false);
   } catch (e: any) {
     assertOk('update 不存在 id (不传 force) 抛 UNOPERABLE',
-      e instanceof CrudError && e.code === CrudErrno.OWNER_MISMATCH);
+      e instanceof CrudError && e.code === CrudErrno.ALTER_REJECTED);
   }
 
   // update 不存在 id 且 force=false → 抛 UNOPERABLE
@@ -203,7 +210,7 @@ async function main(): Promise<void> {
     assertOk('update 不存在 id (force=false) 抛 UNOPERABLE', false);
   } catch (e: any) {
     assertOk('update 不存在 id (force=false) 抛 UNOPERABLE',
-      e instanceof CrudError && e.code === CrudErrno.OWNER_MISMATCH);
+      e instanceof CrudError && e.code === CrudErrno.ALTER_REJECTED);
   }
 
   // update 不存在 id 但 force=true → 不抛错，count = 0
@@ -239,7 +246,7 @@ async function main(): Promise<void> {
     assertOk('delete 不存在 id (force=false) 抛 UNOPERABLE', false);
   } catch (e: any) {
     assertOk('delete 不存在 id (force=false) 抛 UNOPERABLE',
-      e instanceof CrudError && e.code === CrudErrno.OWNER_MISMATCH);
+      e instanceof CrudError && e.code === CrudErrno.ALTER_REJECTED);
   }
 
   // delete 不存在 id 但 force=true → 不抛错

@@ -100,6 +100,8 @@ export interface SchemaField {
   dataRef?: string | DataRef;
   /** 字段内声明的公开选项（非 mongoose 的） */
   options?: Record<string, any>;
+  /** 字段标签 */
+  label?: string;
   /** 字段描述 */
   description?: string;
 }

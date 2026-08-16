@@ -112,7 +112,7 @@ export enum CrudErrno {
   INTERNEL_ERROR = -32603,
   LOGIN_REQUIRED = -32001,
   RIGHT_DEPRIVED = -32003,
-  OWNER_MISMATCH = -32009,
+  ALTER_REJECTED = -32009,
 }
 
 /* ---------- Cradle ---------- */
@@ -143,7 +143,13 @@ export class Cradle implements Crud {
   }
 
   getSoftDelete(): SoftDel | undefined {
-    return (this.getSchema() as any).get('softDelete') as SoftDel | undefined;
+    const sd = (this.getSchema() as any).get('softDelete') as SoftDel | boolean | undefined;
+    if (sd === true) {
+      return { field: 'isDeleted' };
+    }
+    if (sd) {
+      return sd as SoftDel;
+    }
   }
 
   getSoftDeleteData(): Record<string, any> | undefined {
@@ -256,7 +262,7 @@ export class Cradle implements Crud {
         if (unoperable.length && !force) {
           throw new CrudError(
             `Cannot ${action}, ids not found or not permitted: ${unoperable.join(', ')}`,
-            CrudErrno.OWNER_MISMATCH,
+            CrudErrno.ALTER_REJECTED,
             { ids: unoperable },
           );
         }
@@ -524,7 +530,7 @@ export class Cradle implements Crud {
       if (opts.immutable && typeof opts.immutable !== 'function') {
         info.immutable = true;
       }
-      if (opts.select === false) {
+      if (opts.invisible || opts.select === false) {
         info.invisible = true;
       }
       if (opts.countable) {
@@ -658,3 +664,38 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
 
   throw new CrudError(`Method "${name}" is not registered.`, CrudErrno.METHOD_MISSING);
 }
+
+/**
+ * 微调 Schema:
+ * 1. invisible: true 对应 select: false。
+ *    注意：只能调用 SchemaType.select(false) 设置内部 `selected` 状态。
+ * 2. softDelete: true 简写规范化为 { field: 'isDeleted' }。
+ *    若未自定义 isDeleted 字段则加上 isDeleted: { type: Boolean, default: false }。
+ */
+mongoose.plugin(function(schema: Schema): void {
+  const add = schema.add.bind(schema) as typeof schema.add;
+  const fix = (schema: Schema): void => {
+    schema.eachPath((_name: string, type: SchemaType) => {
+      const opts = (type as any).options as Record<string, any> | undefined;
+      if (opts && opts.invisible === true && opts.select === undefined) {
+        type.select(false);
+      }
+    });
+  };
+
+  // 任何之后 schema.add(defs, prefix) 的追加路径再处理
+  schema.add = function (this: Schema, ...args: any[]): Schema {
+    const rs = add(...(args as [any, any?]));
+    fix(this);
+    return rs;
+  };
+  fix(schema);
+
+  // softDelete: true 简写规范化为 { field: 'isDeleted' }，并自动补充字段（已自定义则跳过）
+  if ((schema as any).get('softDelete') === true) {
+    (schema as any).set('softDelete', { field: 'isDeleted' });
+    if (!schema.path('isDeleted')) {
+      schema.add({ isDeleted: { type: Boolean, default: false } });
+    }
+  }
+});
