@@ -1,8 +1,8 @@
 # hongs-crud
 
-一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。
+一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。各方法可供 json-rpc 和 mcp 调用，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理等。
 
-源码：[](https://github.com/ihongs/HongsCRUD/tree/main/crud)
+源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
 ```bash
 npm install hongs-crud
@@ -16,24 +16,25 @@ npm install hongs-crud
 
 `hongs-crud` 围绕标准 Mongoose `Schema` 展开，能力通过两种扩展叠加获得：
 
-- **字段内部自定义选项**：`description` / `options` / `enumRef` / `dataRef` / `countable` 等。
-- **扩展参数自定义选项**：`collection` / `softDelete` / `enums` / `limitDef` / `limitMax` 等。
+- **字段内部自定义选项**：`title` / `description` / `countable` / `assign` / `refData` 等。
+- **扩展参数自定义选项**：`title` / `description` / `collection` / `softDelete` / `dataList` / `limitDef` / `limitMax` 等。
 
 下面是一个完整、简单的例子，包含所有扩展点：
 
 ```ts
 import { Schema } from 'mongoose';
+import { getValues } from 'hongs-crud';
 
-/* ---------- 枚举字典：放到 Schema options.enums 里，字段通过 enumRef 引用 ---------- */
-const ENUMS = {
+/* ---------- 数据列表：放到 Schema 的 dataList 里，字段通过 refData 引用 ---------- */
+const DATALIST = {
   userStatus: [
-    { value: 'active', label: '启用' },
-    { value: 'frozen', label: '冻结' },
-    { value: 'closed', label: '关闭' },
+    { value: 'active', title: '启用' },
+    { value: 'frozen', title: '冻结' },
+    { value: 'closed', title: '关闭' },
   ],
   userRole: [
-    { value: 'admin', label: '管理员' },
-    { value: 'user', label: '普通用户' },
+    { value: 'admin', title: '管理员' },
+    { value: 'user' , title: '普通用户' },
   ],
 };
 
@@ -43,72 +44,113 @@ const userSchema = new Schema(
     username: {
       type: String,
       unique: true,
-      required: true,
-      maxlength: 32,
-      description: '用户名',                          // 非 mongoose 保留字段，schema() 会原样透出
-      options: { customOption: 3 },                  // 字段内自定义的公开选项（前端/AI 可直接消费）
+      required: true,                                // → 上级 object 的 required 数组
+      minlength: 3,                                  // → minLength
+      maxlength: 32,                                 // → maxLength
+      match: /^[a-zA-Z0-9_]+$/,                      // → pattern（正则转字符串）
+      title: '用户名',                                // → title
+      description: '登录账号，字母数字下划线',           // → description
     },
     password: {
       type: String,
-      select: false,
+      select: false,                                 // → writeOnly，可写不可读
       required: true,
     },
+    // 同时满足 select: false 和 assign: false 则不会透出到 schema()
     passsalt: {
       type: String,
-      assign: false,                                 // 只读，系统字段，用户不可赋值
+      select: false,                                 // → writeOnly，可写不可读
+      assign: false,                                 // → readOnly，系统字段，外部不可赋值
+    },
+    age: {
+      type: Number,
+      min: 0,                                        // → minimum
+      max: 200,                                      // → maximum
+      options: {
+        opt: 'value',                                // → x-opt
+      }
     },
     status: {
       type: String,
-      default: 'active',
-      enum: getValues(ENUMS.userStatus),             // mongoose 原生枚举验证
-      enumRef: 'userStatus',                         // 1) 字符串，引用 enums[userStatus]
-      // enumRef: { enumName: 'userStatus' },        // 2) 对象写法，当键值非默认时可写：
-      // enumRef: { enumName: 'userStatus', valueKey: 'value', labelKey: 'label' },
-      countable: true,
+      default: 'active',                             // → default
+      immutable: true,                               // → x-immutable，创建后不可修改
+      countable: true,                               // → x-countable，可被 counts() 统计
+      enum: getValues(DATALIST.userStatus),          // mongoose 原生枚举验证，不透出，getValues 取 value 集合
+      refData: { list: 'userStatus' },               // → x-ref，无 method 即取 dataList.userStatus
     },
     roles: {
       type: [String],
       default: ['user'],
-      enumRef: 'userRole',
       countable: true,
+      refData: { list: 'userRole' },
     },
     orgId: {
-      type: Schema.Types.ObjectId,
-      dataRef: { method: 'org.options', valueKey: '_id', labelKey: 'name' },
+      type: Schema.Types.ObjectId,                   // → type: string, format: object-id
+      refData: {                                     // 有 method 即远程取数
+        method: 'org.search',                        // json-rpc 方法名（Func 或 CrudName.MethodName）
+        params: { cols: { _id: 1, name: 1 } },       // 附加参数
+        list  : 'list',                              // 返回结果中的列表键，默认 list
+        value : '_id',                               // 取值字段名，默认 value
+        title : 'name',                              // 显示字段名，默认 title
+      },
     },
-    // 软删除标记字段（见下 softDelete 扩展）
-    isDeleted: { 
-      type: Boolean,
-      default: false,
-    },
+    // 软删除标记字段 isDeleted / deletedAt（见下 softDelete 扩展）无需定义，
+    // 启用 softDelete 后会自动补上（assign: false + select: false，故不透出 schema()）
   },
 
   /* ====================== Schema 第二参数的 hongs-crud 扩展 ====================== */
   {
     collection: 'users',                 // 必填：集合名，同时用作 mongoose.model() 名称
     timestamps: true,                    // mongoose 原生：自动维护 createdAt / updatedAt
-    softDelete: true,                    // 伪删除，使用 isDeleted 字段，还可用 { field: 'isDeleted', value: true, query: { $ne: true } }
-    enums: ENUMS,                        // 枚举字典，字段通过 enumRef 引用
-    limitDef : 20,                       // search() 默认 limit，未传时的默认值，默认 1；0 表示不限
-    limitMax : 500,                      // search() limit 上限，超过抛 CrudErrno.PARAMS_INVALID，默认 1000；0 表示不限
+    softDelete: true,                    // 伪删除，等价于 { isDeleted: 'isDeleted', deletedAt: 'deletedAt', deleted: true, default: false }
+    dataList  : DATALIST,                // 数据列表，字段通过 refData.list 引用
+    limitDef  : 20,                      // search() 默认 limit，未传时的默认值，默认 1；0 表示不限
+    limitMax  : 500,                     // search() limit 上限，超过抛 CrudErrno.PARAMS_INVALID，默认 1000；0 表示不限
+    title       : '用户',                 // 模型标题，透出到 schema() 根节点 title
+    description : '系统用户表',            // 模型说明，透出到 schema() 根节点 description
   },
 );
 ```
 
-几个说明：
+mongoose 扩展：
 
 | 扩展点 | 归属 | 作用 |
 |---|---|---|
-| `options` | 字段内 | 自定义公开选项，AI 和前端可直接消费（表单渲染、校验等） |
-| `enumRef` | 字段内 | 把字段关联到 `options.enums` 中的某个字典；可写字符串或 `{ enumName, valueKey?, labelKey? }` |
-| `dataRef` | 字段内 | 声明该字段的值来源于某个 Func 或 Crud 方法；可写字符串或 `{ method, params?, valueKey?, labelKey? }` |
-| `countable` | 字段内 | 写 `countable: true` 表示该字段可被 `counts()` 统计 |
-| `description` | 字段内 | 字段说明文字，schema() 会原样透出 |
+| `title` | Schema 扩展、字段内 | 模型标题、字段标题，透出为 JSON Schema 的 `title` |
+| `description` | Schema 扩展、字段内 | 模型说明、字段说明，透出为 JSON Schema 的 `description` |
+| `assign` | 字段内 | 写 `assign: false` 表示外部不可赋值，透出为 `readOnly` |
+| `countable` | 字段内 | 写 `countable: true` 表示该字段可被 `counts()` 统计，透出为 `x-countable` |
+| `refData` | 字段内 | 声明该字段的选项数据来源，透出为 `x-ref`；无 `method` 时取 `dataList[list]`，有 `method` 时远程调用 |
+| `options` | 字段内 | 任意附加信息，每个 key 加 `x-` 前缀后透出（如 `opt` → `x-opt`） |
 | `collection` | Schema 扩展 | **必填**，集合名 |
-| `softDelete` | Schema 扩展 | 伪删除配置；启用后 search / update / delete 自动注入条件 |
-| `enums` | Schema 扩展 | 枚举字典（`Record<string, {value, label}[]>`） |
+| `softDelete` | Schema 扩展 | 伪删除配置；`true` 或 `{ isDeleted, deletedAt, deleted, default }`，启用后自动补字段，且 search / update / delete / counts 自动注入条件 |
+| `dataList` | Schema 扩展 | 数据列表，字段通过 `refData.list` 引用，透出为 `x-datalist` |
 | `limitDef` | Schema 扩展 | `search()` 默认 `limit`，默认 1，0 不限 |
 | `limitMax` | Schema 扩展 | `search()` `limit` 上限，默认 1000，0 不限，超过抛异常 `CrudErrno.PARAMS_INVALID` |
+
+mongoose 选项到 JSON Schema 的映射：
+
+| Mongoose | JSON Schema |
+|---|---|
+| type: `String` / `Number` / `Boolean` | type: 'string' / 'number' / 'boolean' |
+| type: `Schema.Types.Decimal128` | type: 'number' |
+| type: `Date` | type: 'string', format: 'date-time' |
+| type: `Schema.Types.ObjectId` | type: 'string', format: 'object-id' |
+| type: `Map` / `SubDocument` | type: 'object'（`properties` / `additionalProperties`） |
+| type: `[X]` | type: 'array'（`items`） |
+| `default` | `default`（函数型默认值不透出） |
+| `required: true` | 追加到上级 object 的 `required` 数组 |
+| `min` / `max` | `minimum` / `maximum` |
+| `minlength` / `maxlength` | `minLength`/`maxLength`、`minItems`/`maxItems`、`minProperties`/`maxProperties`（按 type） |
+| `match` | `pattern` |
+| `select: false` | `writeOnly` |
+| `assign: false` | `readOnly` |
+| `select: false` + `assign: false` | 整个字段跳过，不透出 |
+| `timestamps` 字段 | `readOnly`（`createdAt` / `updatedAt` 自动标记） |
+| `immutable: true` | `x-immutable` |
+| `countable: true` | `x-countable` |
+| `options: { opt: ... }` | `x-opt`（每个 key 加 `x-` 前缀） |
+| `refData` | `x-ref` |
 
 然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `counts` / `upsert` / `schema` 能力。
 
@@ -116,7 +158,7 @@ const userSchema = new Schema(
 
 ## 2. 方法请求参数与返回结果
 
-6 个方法的入参与返回都是纯 POJO，可直接 JSON 化；所有参数和结果都支持附加任意扩展字段。下面用最简单的举例说明每个方法的请求参数与返回数据。
+方法的入参与返回都是纯 POJO，可直接 JSON 化；所有参数和结果都支持附加任意扩展字段。下面用最简单的举例说明每个方法的请求参数与返回数据。
 
 ### 2.1 create
 
@@ -229,7 +271,7 @@ const userSchema = new Schema(
   created: 1,
   updated: 1,
   errors: [
-    { index: 2, message: 'Item with _id "66b...xxx" not found' },
+    { index: 2, message: 'Item with _id(66b...xxx) not found' },
   ],
 }
 ```
@@ -240,30 +282,92 @@ const userSchema = new Schema(
 
 ### 2.7 schema（扩展）
 
-把 Mongoose Schema 转译为 `{ fields, enums }`，供前端渲染及 AI 编排。
+把 Mongoose Schema 转译为标准 **JSON Schema**（draft 2020-12），供前端渲染表单及 AI 编排。返回体本身就是 JSON Schema 根节点：`$schema` / `type: 'object'` / `title` / `description` / `required` / `properties` / `x-datalist` 都在顶层，`properties` 里才是具体字段。
 
 ```ts
 // 请求
-{ }
+{ cols: { username: 1, status: 1 } }    // 可选，投影，只输出指定字段
 
 // 返回
 {
-  fields: {
-    username: { type: 'String', required: true, description: '登录名' },
-    password: { type: 'String', required: true, select: false },
-    passsalt: { type: 'String', assign: false },
-    status: { type: 'String', default: 'active', countable: true, enumRef: 'userStatus' },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "title": "用户",
+  "description": "系统用户表",
+  "required": ["username", "password"],
+  "properties": {
+    "_id": {
+      "type": "string",
+      "format": "object-id"
+    },
+    "username": {
+      "type": "string",
+      "title": "用户名",
+      "description": "登录账号，字母数字下划线",
+      "minLength": 3,
+      "maxLength": 32,
+      "pattern": "^[a-zA-Z0-9_]+$"
+    },
+    "password": {
+      "type": "string",
+      "writeOnly": true
+    },
+    "age": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 200,
+      "x-opt": "value"
+    },
+    "status": {
+      "type": "string",
+      "default": "active",
+      "x-immutable": true,
+      "x-countable": true,
+      "x-ref": { "list": "userStatus" }
+    },
+    "roles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": ["user"],
+      "x-countable": true,
+      "x-ref": { "list": "userRole" }
+    },
+    "orgId": {
+      "type": "string",
+      "format": "object-id",
+      "x-ref": {
+        "method": "org.search",
+        "params": { "cols": { "_id": 1, "name": 1 } },
+        "list"  : "list",
+        "value" : "_id",
+        "title" : "name"
+      }
+    },
+    "createdAt": { "type": "string", "format": "date-time", "readOnly": true },
+    "updatedAt": { "type": "string", "format": "date-time", "readOnly": true }
   },
-  enums: {
-    userStatus: [
-      { value: 'active', label: '启用' },
-      { value: 'frozen', label: '冻结' },
+  "x-datalist": {
+    "userStatus": [
+      { "value": "active", "title": "启用" },
+      { "value": "frozen", "title": "冻结" },
+      { "value": "closed", "title": "关闭" }
     ],
-  },
+    "userRole": [
+      { "value": "admin", "title": "管理员" },
+      { "value": "user" , "title": "普通用户" }
+    ]
+  }
 }
 ```
 
-`fields` 里每个字段可能透出：`type` / `default` / `required` / `immutable` / `select` / `assign` / `countable` / `description` / `enumRef` / `dataRef` / `options` 等。
+节点说明：
+
+- **标准关键字**：`type` / `title` / `description` / `default` / `format` / `pattern` / `minLength` / `maxLength` / `minimum` / `maximum` / `minItems` / `maxItems` / `minProperties` / `maxProperties` / `items` / `properties` / `additionalProperties` / `required` / `readOnly` / `writeOnly`，语义与 JSON Schema 一致。
+- **扩展关键字**：`x-immutable`（创建后不可改）、`x-countable`（可被 `counts()` 统计）、`x-ref`（选项数据来源）、`x-datalist`（本地数据列表，仅根节点）。
+- **`required` 只在 object 节点上**：根节点及子文档节点用 `required: string[]`，字段节点自身不带 `required`。
+- **`x-ref` 消费方式**：有 `method` 则按 `params` 调 `callFunc(method, params)`，从结果的 `list` 键取列表；无 `method` 则直接取根节点 `x-datalist[list]`。列表项用 `value` 字段作值、`title` 字段作显示文本（默认 `value` / `title`）。
+- **`x-xxx`**：对应字段内的 `options`，所有 key 加上 'x-' 前缀。
+- 数组与子文档递归展开：`[String]` → `items: { type: 'string' }`，`[SubDocument]` → `items: { type: 'object', properties: {...} }`，`Map` → `additionalProperties: { ... }`。
 
 ---
 
@@ -302,13 +406,13 @@ import { regFunc, getFunc, hasFunc, getFuncNames } from 'hongs-crud';
 
 regFunc('health.ping',     () => ({ ok: true, ts: Date.now() }));
 regFunc('system.versions', () => ({ node: process.version }));
-regFunc('org.options',  async () => {
-  // 常见 dataRef 目标：返回 [{_id, name}, ...] 供下拉选项消费
-  return [{ _id: 'o1', name: '组织A' }, { _id: 'o2', name: '组织B' }];
+regFunc('org.search',  async () => {
+  // 常见 refData 目标：返回 { list: [{_id, name}, ...] } 供下拉选项消费
+  return { list: [{ _id: 'o1', name: '组织A' }, { _id: 'o2', name: '组织B' }] };
 });
 ```
 
-> 注意：上面 schema 例子中 `orgId.dataRef.method = 'org.options'` 就是指向这里注册的 Func。
+> 注意：上面 schema 例子中 `orgId.refData.method = 'org.search'` 就是指向这里注册的 Func。
 
 ### 3.3 注册 Role（角色 → 动作集合）
 

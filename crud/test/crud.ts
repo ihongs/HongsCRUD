@@ -12,14 +12,20 @@ const COLL_NAME = 'testCrud';
 // schema：含 required/enum/自定义 validator，用于验证 update 路径走 doc.save 后 validator 是否生效
 const schema = new mongoose.Schema({
   name  : { type: String, required: true, maxlength: 20 },
-  status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft' },
+  status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft', refData: { list: 'status' } },
   age   : { type: Number, min: 0, max: 150 },
   tags  : { type: [String] },
   secret: { type: String, select: false },
-  isDeleted: { type: Boolean, default: false },
 }, {
   collection: COLL_NAME,
-  softDelete: { field: 'isDeleted' },   // 启用软删除
+  softDelete: true,   // 启用软删除
+  dataList  : {
+    status: [
+      { value: 'draft'    , title: '草稿'   },
+      { value: 'published', title: '已发布' },
+      { value: 'archived' , title: '已归档' },
+    ],
+  },
 } as any);
 
 const crud = new Cradle(schema as any);
@@ -87,10 +93,19 @@ async function main(): Promise<void> {
   // ---------- 1) schema ----------
   console.log('--- 1) schema() ---');
   const s = await callSchema();
-  assertOk('schema 含 name 字段', !!s.fields.name);
-  assertOk('schema 含 status 字段', !!s.fields.status);
-  assertOk('schema.name.required === true', s.fields.name.required === true);
-  assertOk('schema.status 含 enumRef', !!s.fields.status.enumRef);
+  assertOk('schema $schema 声明', s.$schema === 'https://json-schema.org/draft/2020-12/schema');
+  assertOk('schema type = object', s.type === 'object');
+  assertOk('schema 含 name 字段', !!s.properties.name);
+  assertOk('schema 含 status 字段', !!s.properties.status);
+  assertOk('schema.required 含 name', Array.isArray(s.required) && s.required.includes('name'));
+  assertOk('schema.name.maxLength = 20', s.properties.name.maxLength === 20);
+  assertOk('schema.age minimum/maximum', s.properties.age.minimum === 0 && s.properties.age.maximum === 150);
+  assertOk('schema.tags 为 array of string', s.properties.tags.type === 'array' && s.properties.tags.items.type === 'string');
+  assertOk('schema.secret 为 writeOnly', s.properties.secret.writeOnly === true);
+  assertOk('schema.status 含 x-ref', !!s.properties.status['x-ref']);
+  assertOk('schema 含 x-datalist.status', !!s['x-datalist'] && !!s['x-datalist'].status);
+  const sCols = await callSchema({ cols: { name: 1 } });
+  assertOk('schema cols 只输出 name', Object.keys(sCols.properties).join(',') === 'name');
 
   // ---------- 2) create ----------
   console.log('\n--- 2) create() ---');
@@ -228,8 +243,8 @@ async function main(): Promise<void> {
   const afterDel = await callSearch({ id: c3.id });
   assert('软删后 search 查不到', afterDel.list.length, 0);
 
-  // 但文档仍存在（只是 isDeleted=true）
-  const rawDoc: any = await crud.getModel().findById(c3.id).lean().exec();
+  // 但文档仍存在（只是 isDeleted=true, isDeleted 为 select:false 需显式选取）
+  const rawDoc: any = await crud.getModel().findById(c3.id).select('+isDeleted').lean().exec();
   assertOk('文档仍在库中（isDeleted=true）', rawDoc && rawDoc.isDeleted === true);
 
   // 重复软删同一条 → 值未变，count = 0

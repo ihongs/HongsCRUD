@@ -1,11 +1,11 @@
 // AI 注意：我有对齐强迫症，不要删除用于对齐的空格
 
 import mongoose, { Schema, Model } from 'mongoose';
-import type { SchemaType } from 'mongoose';
 import type {
   Func,
   Crud,
   Context,
+  SoftDel,
   SearchParams,
   SearchResult,
   CreateParams,
@@ -21,9 +21,8 @@ import type {
   UpsertError,
   SchemaParams,
   SchemaResult,
-  SchemaField,
-  EnumItem,
-  SoftDel,
+  SchemaNode,
+  ColsSpec,
 } from './types';
 
 export * from './types';
@@ -145,38 +144,43 @@ export class Cradle implements Crud {
     return this._model;
   }
 
+  /**
+   * 伪删除配置
+   * true 规范化为 { isDeleted: 'isDeleted' }
+   */
   getSoftDelete(): SoftDel | undefined {
     const sd = (this.getSchema() as any).get('softDelete') as SoftDel | boolean | undefined;
     if (sd === true) {
-      return { field: 'isDeleted' };
+      return { isDeleted: 'isDeleted', deleted: true };
     }
     if (sd) {
       return sd as SoftDel;
     }
   }
 
-  getSoftDeleteData(): Record<string, any> | undefined {
-    const sd = this.getSoftDelete();
-    if (!sd) return undefined;
-    if (sd.value !== undefined) {
-      const v = typeof sd.value === 'function' ? sd.value() : sd.value;
-      return { [sd.field]: v };
-    }
-    return { [sd.field]: true };
-  }
-
+  /**
+   * 排除伪删除数据的条件
+   */
   getSoftDeleteCond(): Record<string, any> | undefined {
     const sd = this.getSoftDelete();
     if (!sd) return undefined;
-    if (sd.query !== undefined) {
-      const q = typeof sd.query === 'function' ? sd.query() : sd.query;
-      return { [sd.field]: q };
-    }
-    if (sd.value !== undefined) {
-      const v = typeof sd.value === 'function' ? sd.value() : sd.value;
-      return { [sd.field]: { '$ne': v } };
-    }
-    return { [sd.field]: { '$ne': true } };
+    const de = sd.deleted !== undefined ? sd.deleted : true;
+    return { [sd.isDeleted || 'isDeleted']: { '$ne': de } };
+  }
+
+  /**
+   * 伪删除时要写入的数据
+   * 未指定 deletedAt: false 则同时写入删除时间
+   */
+  getSoftDeleteData(): Record<string, any> | undefined {
+    const sd = this.getSoftDelete();
+    if (!sd) return undefined;
+    const de = sd.deleted !== undefined ? sd.deleted : true;
+    const data: Record<string, any> = {
+      [sd.isDeleted || 'isDeleted']: de,
+      [sd.deletedAt || 'deletedAt']: new Date(),
+    };
+    return data;
   }
 
   /* ---------- core methods ---------- */
@@ -233,7 +237,9 @@ export class Cradle implements Crud {
     const cond = idAndFind(ids);
     const sdel = this.getSoftDeleteData();
     if (sdel) {
-      return Model.updateMany(cond , { $set: sdel }).exec()
+      // 排除已伪删除的, 免得重复标记刷新删除时间
+      const scnd = this.getSoftDeleteCond();
+      return Model.updateMany({ ...cond, ...scnd }, { $set: sdel }).exec()
         .then(res => Number(res.modifiedCount ?? 0)) as unknown as number;
     } else {
       return Model.deleteMany(cond).exec()
@@ -376,17 +382,16 @@ export class Cradle implements Crud {
     const baseCond: Record<string, any> = { ...find };
     if (sdel) Object.assign(baseCond, sdel);
 
-    // sels 转 $in 查询（'id' 还原为 '_id'，空数组视为没值，不生成任何条件）
+    // sels 转 $in 查询（空数组视为没值，不生成任何条件）
     const selConds: Record<string, any> = {};
     if (sels) {
       for (const [field, values] of Object.entries(sels)) {
         if (!Array.isArray(values) || !values.length) continue;
-        const actual = field === 'id' ? '_id' : field;
-        selConds[actual] = { $in: values };
+        selConds[field] = { $in: values };
       }
     }
 
-    // total：应用全部条件（find + sdel + sels 中所有非空）
+    // 应用全部条件（find + sdel + sels 中所有非空）
     const totalCond    = { ...baseCond, ...selConds };
     const totalPromise = Model.countDocuments(totalCond).exec();
 
@@ -395,7 +400,7 @@ export class Cradle implements Crud {
     for (const [key, path] of Object.entries(this.getSchema().paths)) {
       if (key.startsWith('__')) continue;
       const opts = (path as any).options || {};
-      if (opts.countable) countableFields.push(key === '_id' ? 'id' : key);
+      if (opts.countable) countableFields.push(key);
     }
 
     // 若传了 cols，按白/黑名单过滤；否则统计全部 countable
@@ -417,9 +422,8 @@ export class Cradle implements Crud {
     const unselTargets: string[] = [];
     const   selTargets: string[] = [];
     for (const f of targets) {
-      const actual = f === 'id' ? '_id' : f;
-      if (selConds[actual]) selTargets.push(f); // 已选有值 → B 组
-      else                unselTargets.push(f); // 未选没值 → A 组
+      if (selConds[f]) selTargets.push(f); // 已选有值 → B 组
+      else           unselTargets.push(f); // 未选没值 → A 组
     }
 
     // 读取 top 工具函数
@@ -431,9 +435,8 @@ export class Cradle implements Crud {
 
     // 生成单个字段的 group/sort/limit stages（不含 $match）
     const buildGroupStages = (f: string): any[] => {
-      const actual = f === 'id' ? '_id' : f;
       const stages: any[] = [
-        { $group  : { _id: '$' + actual, count: { $sum: 1 } } },
+        { $group  : { _id: '$' + f, count: { $sum: 1 } } },
         { $sort   : { count: -1 } },
       ];
       const topN = topFor(f);
@@ -462,11 +465,10 @@ export class Cradle implements Crud {
 
     // ---- B 组：每个 selTarget 单独一次 aggregate，前置条件排除自身 ----
     for (const f of selTargets) {
-      const actual = f === 'id' ? '_id' : f;
       const fieldCond: Record<string, any> = { ...baseCond };
-      for (const [selActual, selIn] of Object.entries(selConds)) {
-        if (selActual === actual) continue; // 排除自身
-        fieldCond[selActual] = selIn;
+      for (const [selField, selIn] of Object.entries(selConds)) {
+        if (selField === f) continue; // 排除自身
+        fieldCond[selField] = selIn;
       }
       const stages: any[] = [
         { $match: fieldCond },
@@ -563,92 +565,33 @@ export class Cradle implements Crud {
     })() as unknown as UpsertResult;
   }
 
+  /**
+   * 转译为标准 JSON Schema（draft 2020-12）
+   * cols 仅过滤顶层字段
+   */
   schema(params: SchemaParams, _ctx: Context): SchemaResult {
-    const cols  = params.cols;
-    const paths = this.getSchema().paths;
+    const schema = this.getSchema();
+    const opts   = (schema as any).options || {};
+    const refs   = new Set<string>();
+    const node   = buildObjectNode(schema, params.cols, refs);
 
-    const fields: Record<string, SchemaField> = {};
-    const enums : Record<string, EnumItem []> = {};
-    const menus : Record<string, EnumItem []> = (this.getSchema() as any).get('enums') || {};
+    const result: SchemaResult = {
+      $schema   : 'https://json-schema.org/draft/2020-12/schema',
+      type      : 'object',
+      properties: node.properties || {},
+    };
+    if (opts.title      ) result.title       = opts.title;
+    if (opts.description) result.description = opts.description;
+    if (node.required   ) result.required    = node.required;
 
-    for (const [key, path] of Object.entries(paths)) {
-      if (key.startsWith('__')) continue;
-      const fieldName = key === '_id' ? 'id' : key;
-
-      // 边遍历边按 cols 过滤
-      if (cols) {
-        const mode = Object.values(cols).every(v => v === 1) ? 1 : 0;
-        const included = mode === 1
-          ? cols[fieldName] === 1
-          : cols[fieldName] !== 0;
-        if (!included) continue;
-      }
-
-      const st = path as unknown as SchemaType;
-      const opts = (st as any).options || {};
-
-      const info: SchemaField = {
-        type: (st as any).instance || 'Mixed',
-      };
-      if ((st as any).defaultValue !== undefined && typeof (st as any).defaultValue !== 'function') {
-        info.default = (st as any).defaultValue;
-      }
-      if (opts.required && typeof opts.required !== 'function' && (st as any).isRequired) {
-        info.required = true;
-      }
-      if (opts.immutable && typeof opts.immutable !== 'function') {
-        info.immutable = true;
-      }
-      if (opts.select === false) {
-        info.select = false;
-      }
-      if (opts.assign === false) {
-        info.assign = false;
-      }
-      if (opts.countable) {
-        info.countable = true;
-      }
-      if (opts.description) {
-        info.description = opts.description;
-      }
-
-      // options：优先读字段内 options（自定义内部 options），再补齐 mongoose 的校验选项
-      const options: Record<string, any> = opts.options ? { ...opts.options } : {};
-      if (options.min === undefined && opts.min !== undefined) options.min = opts.min;
-      if (options.max === undefined && opts.max !== undefined) options.max = opts.max;
-      if (options.minLength === undefined && opts.minlength !== undefined) options.minLength = opts.minlength;
-      if (options.maxLength === undefined && opts.maxlength !== undefined) options.maxLength = opts.maxlength;
-      if (options.pattern === undefined && opts.match) options.pattern = String(opts.match);
-      if (Object.keys(options).length) info.options = options;
-
-      // enumRef：优先读字段内 enumRef（自定义引用）
-      if (opts.enumRef) {
-        info.enumRef = opts.enumRef;
-        // enumRef 可为对象或字符串，统一从 enumName 取 key 去查
-        const enumName = typeof opts.enumRef !== 'string'
-          ? opts.enumRef.enumName
-          : opts.enumRef;
-        if (menus[enumName]) {
-          enums[enumName] = menus[enumName];
-        }
-      } else if ((st as any).enumValues && (st as any).enumValues.length) {
-        // 字段原生 mongoose enum：把字段名当 enumRef，枚举值同步收集
-        info.enumRef = fieldName;
-        enums[fieldName] = (st as any).enumValues.map((v: any) => ({
-          value: v,
-          label: String(v),
-        }));
-      }
-
-      // dataRef：直接读字段内 dataRef（自定义引用）
-      if (opts.dataRef) {
-        info.dataRef = opts.dataRef;
-      }
-
-      fields[fieldName] = info;
+    // x-datalist：仅输出被 refData 引用到的列表
+    const dataList = (schema as any).get('dataList') || {};
+    const datalist: Record<string, Record<string, any>[]> = {};
+    for (const name of refs) {
+      if (dataList[name]) datalist[name] = dataList[name];
     }
+    if (Object.keys(datalist).length) result['x-datalist'] = datalist;
 
-    const result: SchemaResult = { fields, enums };
     return result;
   }
 
@@ -656,8 +599,54 @@ export class Cradle implements Crud {
 
 /* ---------- Helpers ---------- */
 
-export function getValues(items: EnumItem[], valueField: string = 'value'): string[] {
-  return items.map(item => String((item as any)[valueField]));
+export function callFunc(name: string, params: Record<string, any>, ctx: Context): any {
+  // 1. 从 FUNCS 中查找并执行，可覆盖 model.method
+  if (hasFunc(name)) {
+    // 检查是否许可调用
+    if (! isPermitted(name, ctx.roles || [])) {
+      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
+    }
+
+    return getFunc(name)(params, ctx);
+  }
+
+  // 2. 从 CRUDS 中查找并执行，仅放行 callable 的方法
+  X: {
+    const p = name.lastIndexOf ('.');
+    if (p <= 0) break X;
+
+    const crudName = name.slice(0,p);
+    const funcName = name.slice(1+p);
+    if (! hasCrud(crudName)) break X;
+
+    const crud = getCrud( crudName );
+    if (! crud.callable?.includes(funcName)) break X;
+
+    // 检查是否许可调用
+    if (! isPermitted(name, ctx.roles || [])) {
+      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
+    }
+
+    return (crud as any)[funcName].call(crud, params, ctx);
+  }
+
+  throw new CrudError(`Method "${name}" is not registered.`, CrudErrno.METHOD_MISSING);
+}
+
+export function isPermitted(auth: string, roles: string[] | Set<string>): boolean {
+  for (const role of roles) {
+    const auths: Set<string> = ROLES[role];
+    if (auths && auths.has(auth)) return true;
+  }
+  return false;
+}
+
+/**
+ * 取数据列表中的取值集合
+ * 便于给 mongoose 的 enum 赋值
+ */
+export function getValues(items: Record<string, any>[], valueField: string = 'value'): string[] {
+  return items.map(item => String(item[valueField]));
 }
 
 export function mergeFind(
@@ -695,52 +684,175 @@ export function idAndFind(
   return { $and : conditions };
 }
 
-export function isPermitted(auth: string, roles: string[] | Set<string>): boolean {
-  for (const role of roles) {
-    const auths: Set<string> = ROLES[role];
-    if (auths && auths.has(auth)) return true;
+/**
+ * 构建 object 节点
+ * cols 仅过滤顶层字段
+ * refs 收集用到的 dataList 键
+ */
+export function buildObjectNode(schema: Schema, cols?: ColsSpec, refs?: Set<string>): SchemaNode {
+  const node: SchemaNode = { type: 'object', properties: {} };
+  const mode = cols && Object.values(cols).every(v => v === 1) ? 1 : 0;
+
+  for (const [name, path] of Object.entries(schema.paths)) {
+    if (name.startsWith('__')) continue;
+    if (name.includes  ('$*')) continue; // Map 的值类型走 additionalProperties
+
+    const opts = (path as any).options || {};
+
+    // 既不可读又不可写的，无需透出
+    if (opts.select === false && opts.assign === false) continue;
+
+    // cols 仅过滤顶层字段
+    const top  = name.split('.')[0];
+    if (cols && (mode === 1 ? cols[top] !== 1 : cols[top] === 0)) continue;
+
+    // 逐层找到（或建出）所属的 object 节点
+    const keys = name.split('.');
+    let   host = node;
+    for (let i = 0; i < keys.length - 1; i ++) {
+      const props = host.properties = host.properties || {};
+      let   sub   = props[keys[i]];
+      if (! sub) {
+        sub = props[keys[i]] = { type: 'object', properties: {} };
+      }
+      host = sub;
+    }
+
+    const last = keys[keys.length - 1];
+    (host.properties = host.properties || {})[last] = buildItemNode(path, refs);
+    if ((path as any).isRequired) {
+      (host.required = host.required || []).push(last);
+    }
   }
-  return false;
+
+  // timestamps 由系统维护，仅可读
+  const ts = ((schema as any).options || {}).timestamps;
+  if (ts) {
+    const createdAt = typeof ts === 'object' && typeof ts.createdAt === 'string' ? ts.createdAt : 'createdAt';
+    const updatedAt = typeof ts === 'object' && typeof ts.updatedAt === 'string' ? ts.updatedAt : 'updatedAt';
+    for (const key of [createdAt, updatedAt]) {
+      if (node.properties![key]) node.properties![key].readOnly = true;
+    }
+  }
+
+  return node;
 }
 
-export function callFunc(name: string, params: Record<string, any>, ctx: Context): any {
-  // 1. 从 FUNCS 中查找并执行，可覆盖 model.method
-  if (hasFunc(name)) {
-    // 检查是否许可调用
-    if (! isPermitted(name, ctx.roles || [])) {
-      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
-    }
+/**
+ * 构建字段节点
+ * 数组、子文档、Map 均递归展开
+ */
+function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
+  const opts = path.options || {};
+  const node = buildTypeNode(path, refs);
 
-    return getFunc(name)(params, ctx);
+  if (opts.title      ) node.title       = opts.title;
+  if (opts.description) node.description = opts.description;
+
+  // 函数型默认值（如 Date.now）不透出
+  if (opts.default !== undefined && typeof opts.default !== 'function') {
+    node.default = opts.default;
   }
 
-  // 2. 从 CRUDS 中查找并执行，仅放行 callable 的方法
-  X: {
-    const p = name.lastIndexOf ('.');
-    if (p <= 0) break X;
+  if (opts.min !== undefined) node.minimum = firstOf(opts.min);
+  if (opts.max !== undefined) node.maximum = firstOf(opts.max);
 
-    const crudName = name.slice(0,p);
-    const funcName = name.slice(1+p);
-    if (! hasCrud(crudName)) break X;
-
-    const crud = getCrud( crudName );
-    if (! crud.callable?.includes(funcName)) break X;
-
-    // 检查是否许可调用
-    if (! isPermitted(name, ctx.roles || [])) {
-      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
-    }
-
-    return (crud as any)[funcName].call(crud, params, ctx);
+  // minlength/maxlength 按节点类型分派
+  if (opts.minlength !== undefined) {
+    const v = firstOf(opts.minlength);
+    if      (node.type === 'array' ) node.minItems      = v;
+    else if (node.type === 'object') node.minProperties = v;
+    else                             node.minLength     = v;
+  }
+  if (opts.maxlength !== undefined) {
+    const v = firstOf(opts.maxlength);
+    if      (node.type === 'array' ) node.maxItems      = v;
+    else if (node.type === 'object') node.maxProperties = v;
+    else                             node.maxLength     = v;
   }
 
-  throw new CrudError(`Method "${name}" is not registered.`, CrudErrno.METHOD_MISSING);
+  if (opts.match) {
+    const m = firstOf(opts.match);
+    node.pattern = m instanceof RegExp ? m.source : String(m);
+  }
+
+  if (opts.select    === false) node.writeOnly        = true;
+  if (opts.assign    === false) node.readOnly         = true;
+  if (opts.immutable === true ) node['x-immutable'  ] = true;
+  if (opts.countable === true ) node['x-countable'  ] = true;
+
+  if (opts.refData) {
+    node['x-ref'] = opts.refData;
+    // 无 method 即取自 dataList，记下以便按需输出
+    if (refs && ! opts.refData.method && opts.refData.list) {
+      refs.add(opts.refData.list);
+    }
+  }
+
+  // 公开选项，键加 x- 前缀
+  if (opts.options) {
+    for (const [key, val] of Object.entries(opts.options)) {
+      node['x-' + key] = val;
+    }
+  }
+
+  return node;
+}
+
+/**
+ * 构建字段的类型部分
+ */
+function buildTypeNode(path: any, refs?: Set<string>): SchemaNode {
+  switch (path.instance) {
+    case 'Embedded':
+      return buildObjectNode(path.schema, undefined, refs);
+
+    case 'Array': {
+      const node: SchemaNode = { type: 'array' };
+      const cast = path.caster || path.$embeddedSchemaType;
+      if (cast) {
+        node.items = cast.schema
+          ? buildObjectNode(cast.schema, undefined, refs)
+          : buildItemNode(cast, refs);
+      }
+      return node;
+    }
+
+    case 'Map': {
+      const node: SchemaNode = { type: 'object' };
+      const of = path.$__schemaType;
+      if (of) {
+        node.additionalProperties = of.schema
+          ? buildObjectNode(of.schema, undefined, refs)
+          : buildItemNode(of, refs);
+      } else {
+        node.additionalProperties = true;
+      }
+      return node;
+    }
+
+    case 'String'    : return { type: 'string' };
+    case 'Number'    : return { type: 'number' };
+    case 'Decimal128': return { type: 'number' };
+    case 'Boolean'   : return { type: 'boolean' };
+    case 'Date'      : return { type: 'string', format: 'date-time' };
+    case 'ObjectId'  : return { type: 'string', format: 'object-id' };
+    case 'ObjectID'  : return { type: 'string', format: 'object-id' };
+    default          : return { type: 'object' };
+  }
+}
+
+/**
+ * mongoose 校验项可写作 [值, 提示]
+ */
+function firstOf(v: any): any {
+  return Array.isArray(v) ? v[0] : v;
 }
 
 /**
  * 微调 Schema:
- * 1. softDelete: true 简写规范化为 { field: 'isDeleted' }。
- *    若未自定义 isDeleted 字段则加上 isDeleted: { type: Boolean, default: false }。
+ * 1. softDelete: true 简写规范化为 { isDeleted: 'isDeleted', deletedAt: 'deletedAt', deleted: true, default: false }。
+ * 2. 补充伪删除标记、伪删除时间字段（已自定义则跳过）。
  */
 mongoose.plugin(function(schema: Schema): void {
   /*
@@ -754,7 +866,6 @@ mongoose.plugin(function(schema: Schema): void {
       }
     });
   };
-
   // 任何之后 schema.add(defs, prefix) 的追加路径再处理
   schema.add = function (this: Schema, ...args: any[]): Schema {
     const rs = add(...(args as [any, any?]));
@@ -764,11 +875,15 @@ mongoose.plugin(function(schema: Schema): void {
   fix(schema);
   */
 
-  // softDelete: true 简写规范化为 { field: 'isDeleted' }，并自动补充字段（已自定义则跳过）
-  if ((schema as any).get('softDelete') === true) {
-    (schema as any).set('softDelete', { field: 'isDeleted' });
-    if (!schema.path('isDeleted')) {
-      schema.add({ isDeleted: { type: Boolean, default: false } });
-    }
+  // softDelete: true 简写规范化
+  let sd = (schema as any).get('softDelete') as SoftDel | boolean | undefined;
+  if (sd === true) {
+    sd = { isDeleted: 'isDeleted', deletedAt: 'deletedAt', deleted: true, default: false };
+    (schema as any).set('softDelete', sd);
+  }
+  if (sd) {
+    const sdObj = sd as SoftDel;
+    schema.add({ [sdObj.isDeleted || 'isDeleted']: { type: Boolean, assign: false, select: false, default: sdObj.default !== undefined ? sdObj.default : false, index: true } });
+    schema.add({ [sdObj.deletedAt || 'deletedAt']: { type: Date   , assign: false, select: false, default: null } });
   }
 });
