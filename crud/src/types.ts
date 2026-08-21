@@ -2,10 +2,10 @@
 
 import type { Document } from 'mongoose';
 
+export type FindMode = 'only-items' | 'only-total' | 'has-more';
 export type FindSpec = Record<string, any>;
 export type ColsSpec = Record<string, 0 |  1>;
 export type SortSpec = Record<string, 1 | -1>;
-export type CountMode = 'with' | 'only' | 'next';
 
 export interface CreateParams {
   data: Record<string, any>;
@@ -19,44 +19,46 @@ export interface CreateResult {
 
 export interface UpdateParams {
   id: string | string[];
-  find?: FindSpec;
   data : Record<string, any>;
+  find?: FindSpec;
   force?: boolean;
   [key: string]: any;
 }
 
 export interface UpdateResult {
-  count: number;
+  affected: number;
   [key: string]: any;
 }
 
 export interface DeleteParams {
   id: string | string[];
-  find?: FindSpec;
   data?: Record<string, any>;
+  find?: FindSpec;
   force?: boolean;
   [key: string]: any;
 }
 
 export interface DeleteResult {
-  count: number;
+  affected: number;
   [key: string]: any;
 }
 
 export interface SearchParams {
   id?: string | string[];
+  wd?: string;
+  mode?: FindMode;
   find?: FindSpec;
   cols?: ColsSpec;
   sort?: SortSpec;
   start?: number;
   limit?: number;
-  count?: CountMode;
   [key: string]: any;
 }
 
 export interface SearchResult {
-  list?: Document[];
-  count?: number;
+  items?: Document[];
+  total?: number;
+  more?: boolean;
   [key: string]: any;
 }
 
@@ -70,13 +72,13 @@ export interface CountsParams {
 
 export interface CountsResult {
   counts: Record<string, Record<any, number>>; // 统计量 {field: {value1: 10, value2: 20, ...}}
-  count : number; // 总数，范围：find + sels
+  total : number; // 总数，范围：find + sels
   [key: string]: any;
 }
 
 export interface UpsertParams {
   uks?: string[];
-  list: Record<string, any>[];
+  items: Record<string, any>[];
 }
 
 export interface UpsertResult {
