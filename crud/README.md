@@ -204,7 +204,7 @@ mongoose 选项到 JSON Schema 的映射：
   sort : { createdAt: -1 },           // 排序
   start: 0,                           // 跳过
   limit: 20,                          // 上限；缺省用 schema.limitDef，超过 limitMax 抛异常
-  count: 'all',                       // 统计模式，见下
+  count: 'with',                       // 统计模式，见下
 }
 
 // 返回
@@ -219,7 +219,7 @@ mongoose 选项到 JSON Schema 的映射：
 | 值 | 返回 |
 |---|---|
 | 未传 | `{ list }` |
-| `'all'` | `{ list, count }`（count = 总数） |
+| `'with'` | `{ list, count }`（count = 总数） |
 | `'next'` | `{ list, count }`（count = 0 / 1，是否有下一页） |
 | `'only'` | `{ count }`（不要列表） |
 

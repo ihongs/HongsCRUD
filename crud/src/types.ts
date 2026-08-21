@@ -5,7 +5,7 @@ import type { Document } from 'mongoose';
 export type FindSpec = Record<string, any>;
 export type ColsSpec = Record<string, 0 |  1>;
 export type SortSpec = Record<string, 1 | -1>;
-export type CountMode = 'all' | 'next' | 'only';
+export type CountMode = 'with' | 'only' | 'next';
 
 export interface CreateParams {
   data: Record<string, any>;

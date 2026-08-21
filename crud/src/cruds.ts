@@ -363,7 +363,7 @@ export class Cradle implements Crud {
       ]).then(([list, probe]) => ({ list, count: probe ? 1 : 0 })) as unknown as SearchResult;
     }
 
-    if (count === 'all') {
+    if (count === 'with') {
       return Promise.all([
         buildQuery().exec(),
         Model.countDocuments(cond),
