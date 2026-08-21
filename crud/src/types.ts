@@ -63,6 +63,8 @@ export interface SearchResult {
 }
 
 export interface CountsParams {
+  id?: string | string[];
+  wd?: string;
   find?: FindSpec;
   cols?: ColsSpec;
   sels?: Record<string, any[]>; // 已选值 {field: [value1, value2, ...]}

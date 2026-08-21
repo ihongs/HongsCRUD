@@ -378,13 +378,11 @@ export class Cradle implements Crud {
   }
 
   counts(params: CountsParams, _ctx: Context): CountsResult {
-    const { find = {}, cols, sels, top = 10 } = params;
-    const sdel  = this.getSoftDeleteCond();
+    const { id, wd, find = {}, cols, sels, top = 10 } = params;
     const Model = this.getModel();
+    const sdel  = this.getSoftDeleteCond();
 
-    // 基础条件：find + 软删除
-    const baseCond: Record<string, any> = { ...find };
-    if (sdel) Object.assign(baseCond, sdel);
+    const baseCond: Record<string, any> = findMerge(id, wd, find, sdel);
 
     // sels 转 $in 查询（空数组视为没值，不生成任何条件）
     const selConds: Record<string, any> = {};
@@ -499,7 +497,7 @@ export class Cradle implements Crud {
         }
         counts[f] = map;
       }
-      return { counts, count: total };
+      return { counts, total };
     }) as unknown as CountsResult;
   }
 

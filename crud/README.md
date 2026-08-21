@@ -177,7 +177,7 @@ mongoose 选项到 JSON Schema 的映射：
 { id: '66b...a01', data: { status: 'frozen' } }
 
 // 返回（实际内容发生变化的文档数；同值更新计 0）
-{ count: 1 }
+{ affected: 1 }
 ```
 
 - `force: true` 时，不存在的 id 静默跳过；缺省则抛异常。
@@ -190,7 +190,7 @@ mongoose 选项到 JSON Schema 的映射：
 { id: '66b...a01' }
 
 // 返回（硬删：删除条数；软删：被打标条数，重复打标计 0）
-{ count: 1 }
+{ affected: 1 }
 ```
 
 ### 2.4 search
@@ -204,24 +204,24 @@ mongoose 选项到 JSON Schema 的映射：
   sort : { createdAt: -1 },           // 排序
   start: 0,                           // 跳过
   limit: 20,                          // 上限；缺省用 schema.limitDef，超过 limitMax 抛异常
-  count: 'with',                       // 统计模式，见下
+  mode: '',                   // 统计模式，见下
 }
 
 // 返回
 {
-  list: [{ _id: '66b...a01', username: 'alice', status: 'active' }, ...],
-  count: 32,                          // 仅当传了 count 模式才有
+  items: [{ _id: '66b...a01', username: 'alice', status: 'active' }, ...],
+  total: 32,
 }
 ```
 
-`count` 模式：
+`mode` 模式：
 
 | 值 | 返回 |
 |---|---|
-| 未传 | `{ list }` |
-| `'with'` | `{ list, count }`（count = 总数） |
-| `'next'` | `{ list, count }`（count = 0 / 1，是否有下一页） |
-| `'only'` | `{ count }`（不要列表） |
+| 未传 | `{ items, total }` |
+| `'only-items'` | `{ items }` |
+| `'only-total'` | `{ total }` |
+| `'has-more'` | `{ items, more }`（more = true 时有下一页） |
 
 ### 2.5 counts（扩展）
 
@@ -241,7 +241,7 @@ mongoose 选项到 JSON Schema 的映射：
     status: { active: 28, frozen: 5, closed: 2 },
     roles : { user: 32, admin: 3 },
   },
-  count: 35,                          // 应用 sels 已选条件后的总文档数
+  total: 35,                          // 应用 sels 已选条件后的总文档数
 }
 ```
 
