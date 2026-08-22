@@ -177,7 +177,7 @@ mongoose 选项到 JSON Schema 的映射：
 { id: '66b...a01', data: { status: 'frozen' } }
 
 // 返回（实际内容发生变化的文档数；同值更新计 0）
-{ affected: 1 }
+{ affected: 1, validIds: ['66b...a01'] }
 ```
 
 - `force: true` 时，不存在的 id 静默跳过；缺省则抛异常。
@@ -190,7 +190,7 @@ mongoose 选项到 JSON Schema 的映射：
 { id: '66b...a01' }
 
 // 返回（硬删：删除条数；软删：被打标条数，重复打标计 0）
-{ affected: 1 }
+{ affected: 1, validIds: ['66b...a01'] }
 ```
 
 ### 2.4 search
@@ -199,12 +199,13 @@ mongoose 选项到 JSON Schema 的映射：
 // 请求
 {
   id   : ['66b...a01'],               // 可单个或数组，用于获取详情
+  wd   : 'alice',                     // 搜索关键词
   find : { status: 'active' },        // 查询条件
   cols : { username: 1, status: 1 },  // 投影
   sort : { createdAt: -1 },           // 排序
   start: 0,                           // 跳过
   limit: 20,                          // 上限；缺省用 schema.limitDef，超过 limitMax 抛异常
-  mode: '',                   // 统计模式，见下
+  mode: '',                           // 统计模式，见下
 }
 
 // 返回
@@ -262,7 +263,7 @@ mongoose 选项到 JSON Schema 的映射：
   list: [
     { name: 'alice', age: 20 },                       // 没 _id → 添加
     { _id: '66b...a01', name: 'alice', age: 21 },     // 有 _id 且存在 → 更新
-    { _id: '66b...xxx', name: 'ghost' },              // 有 _id 但不存在 → 报错
+    { _id: '66b...xxx', name: 'ghost', age: 99 },     // 有 _id 不存在 → 报错
   ],
 }
 

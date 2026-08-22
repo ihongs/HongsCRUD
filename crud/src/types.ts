@@ -26,7 +26,8 @@ export interface UpdateParams {
 }
 
 export interface UpdateResult {
-  affected: number;
+  affected : number;
+  validIds?: string[];
   [key: string]: any;
 }
 
@@ -39,7 +40,8 @@ export interface DeleteParams {
 }
 
 export interface DeleteResult {
-  affected: number;
+  affected : number;
+  validIds?: string[];
   [key: string]: any;
 }
 
@@ -192,7 +194,7 @@ export interface SchemaNode {
   maximum?: number;
 
   /** type: 'string'，对应 Date 的 date-time、ObjectId 的 object-id */
-  format?: 'date-time' | 'object-id';
+  format?: string;
   /** type: 'string'，对应 match，正则转字符串 */
   pattern?: string;
   /** type: 'string'，对应 minLength */
@@ -226,7 +228,7 @@ export interface SchemaNode {
 
   /** 创建后不可修改，对应字段内 immutable: true */
   'x-immutable'?: boolean;
-  /** counts() 可统计，对应字段内 countable: true */
+  /** 统计接口可计算，对应字段内 countable: true */
   'x-countable'?: boolean;
   /** 选项来源，对应字段内 refData  */
   'x-ref'?: DataRef;
@@ -276,6 +278,7 @@ export interface SoftDel {
   deletedAt?: string;
   /** 已删除标记值，可为值或函数，默认 true */
   deleted?: any;
+  /** 默认值, 可为值或函数，默认 undefined */
   default?: any;
 }
 

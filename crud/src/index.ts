@@ -6,6 +6,7 @@ import type {
   Crud,
   Context,
   SoftDel,
+  ColsSpec,
   SearchParams,
   SearchResult,
   CreateParams,
@@ -22,7 +23,6 @@ import type {
   SchemaParams,
   SchemaResult,
   SchemaNode,
-  ColsSpec,
 } from './types';
 
 export * from './types';
@@ -188,7 +188,7 @@ export class Cradle implements Crud {
   /**
    * 添加一个文档
    * 触发完整 validator
-   * 返回 [ doc, id ]，doc 供 Chaser 等子类直接同步，免得再查一次
+   * 返回 [ doc, id ]
    */
   add(data: Record<string, any>): [ any, string ] {
     const Model = this.getModel();
@@ -222,12 +222,28 @@ export class Cradle implements Crud {
 
   /**
    * 更新多个文档
-   * 不触发自定义 validator
+   * 触发完整 validator
+   * 逐个调用 set(id, data)
    */
   setAll(ids: string[], data : Record<string, any>): number {
+    return (async (): Promise<number> => {
+      let count = 0;
+      for (const id of ids) {
+        const [ , n ] = await (this.set(id, data) as unknown as Promise<[ any, number ]>);
+        count += n;
+      }
+      return count;
+    })() as unknown as number;
+  }
+
+  /**
+   * 更新多个文档
+   * 不触发任何的 validator
+   */
+  putAll(ids: string[], data : Record<string, any>): number {
     const Model = this.getModel();
     const cond = findMerge(ids, undefined);
-    return Model.updateMany(cond, { $set: data }, { runValidators: true }).exec()
+    return Model.updateMany(cond, { $set: data }).exec()
       .then(res => Number(res.modifiedCount ?? 0)) as unknown as number;
   }
 
@@ -296,20 +312,10 @@ export class Cradle implements Crud {
 
     // 一次性查出所有 id + find 条件下存在的 _id，避免 N 次查询
     return this.chkIds(ids, find, force, 'update').then(operable => {
-        if (!operable.length) return { affected: 0 };
+        if (!operable.length) return { affected: 0, validIds: [] };
 
-        /**
-         * 逐个调用 set，触发完整 validator
-         * updateMany() 即便 runValidators 为 true，也不会触发自定义 validator
-         */
-        return (async (): Promise<UpdateResult> => {
-          let count = 0;
-          for (const id of operable) {
-            const [ , n ] = await (this.set(id, data) as unknown as Promise<[ any, number ]>);
-            count += n;
-          }
-          return { affected: count };
-        })() as unknown as UpdateResult;
+        return (this.setAll(operable, data) as unknown as Promise<number>)
+          .then(count => ({ affected: count, validIds: operable }));
       }) as unknown as UpdateResult;
   }
 
@@ -319,10 +325,10 @@ export class Cradle implements Crud {
 
     // 一次性查出所有 id + find 条件下存在的 _id，避免 N 次查询
     return this.chkIds(ids, find, force, 'delete').then(operable => {
-        if (!operable.length) return { affected: 0 };
+        if (!operable.length) return { affected: 0, validIds: [] };
 
         return (this.delAll(operable, data) as unknown as Promise<number>)
-          .then(count => ({ affected: count }));
+          .then(count => ({ affected: count, validIds: operable }));
       }) as unknown as DeleteResult;
   }
 
@@ -332,9 +338,7 @@ export class Cradle implements Crud {
     const sdel  = this.getSoftDeleteCond();
     const cond  = findMerge(id, wd, find, sdel);
 
-    // limit：优先用调用方传的，没传则取 schema limitDef（默认 1）
-    // limitMax（默认 1000）为上限：超过或调用方传 0（不限）时截断为 limitMax
-    // limitDef = 0 表示不限；limitMax = 0 表示不限
+    // 0 不限，默认 limitDef，受 limitMax 约束
     const opts  = (this.getSchema() as any).options || {};
     const limitDef = opts.limitDef !== undefined ? opts.limitDef : 1;
     const limitMax = opts.limitMax !== undefined ? opts.limitMax : 1000;
