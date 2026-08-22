@@ -121,12 +121,12 @@ export interface SchemaParams {
  *     // 下为扩展项
  *     assign: false, // 外部不可赋值，对应 readOnly
  *     countable: true, // 可统计字段，对应 x-countable
- *     refData: { // 对应 x-ref，无 method 表示取 dataList 中数据
+ *     reference: { // 对应 x-reference，无 method 表示取 references 中数据
  *       method: 'field1', // 远程请求方法名
  *       params: { find }, // 远程请求参数集
- *       list: 'list', // dataList 的键或请求返回的列表键
- *       value: 'value', // 取值字段名，ref 时指 dataList.name1 中的 value 字段
- *       title: 'title', // 标题字段名，ref 时指 dataList.name1 中的 title 字段
+ *       items: 'items', // 引用数据键或请求返回的列表键，默认为 items
+ *       value: 'value', // 取值字段名，默认为 value
+ *       title: 'title', // 标题字段名，默认为 title
  *     },
  *     options: { // 对应 x-opt，不确定的公开选项
  *       opt: 'value',
@@ -143,7 +143,7 @@ export interface SchemaParams {
  *     deletedAt: 'deletedAt', // 删除时间字段，可用 false 取消
  *     deleted: true, // 软删除值
  *   },
- *   dataList: {
+ *   references: {
  *     field1: [
  *       { value: 'value1', title: '选项1' },
  *       { value: 'value2', title: '选项2' },
@@ -172,8 +172,8 @@ export interface SchemaResult extends SchemaNode {
   required?: string[];
   /** 字段集合，键为字段名 */
   properties: Record<string, SchemaNode>;
-  /** 数据列表，对应 Schema 扩展 datalist，仅根节点有 */
-  'x-datalist'?: Record<string, Record<string, any>[]>;
+  /** 数据列表，对应 Schema 扩展 references，仅根节点有 */
+  'x-references'?: Record<string, Record<string, any>[]>;
   [key: string]: any;
 }
 
@@ -230,8 +230,8 @@ export interface SchemaNode {
   'x-immutable'?: boolean;
   /** 统计接口可计算，对应字段内 countable: true */
   'x-countable'?: boolean;
-  /** 选项来源，对应字段内 refData  */
-  'x-ref'?: DataRef;
+  /** 关联的数据来源，对应字段内 reference: { items } */
+  'x-reference'?: DataRef;
 
   [key: string]: any;
 }
@@ -241,7 +241,7 @@ export interface SchemaNode {
  * 关联到 dataList:
  * ```json
  * {
- *   "list": "field1"
+ *   "items": "field1"
  * }
  * ```
  * 关联到 mod.func:
@@ -252,7 +252,7 @@ export interface SchemaNode {
  *     "find": { "boost": { $gt: 0 } },
  *     "cols": { "_id": 1, "name": 1 }, 
  *   },
- *   "list": "list",
+ *   "items": "items",
  *   "value": "_id",
  *   "title": "name"
  * }
@@ -263,9 +263,9 @@ export interface DataRef {
   method?: string;
   /** json-rpc 附加参数 */
   params?: Record<string, any>;
-  /** dataList 的键或返回的列表键，默认 list */
-  list?: string;
-  /** 取值字段名，默认 valiue */
+  /** dataList 的键或返回的列表键，默认 items */
+  items?: string;
+  /** 取值字段名，默认 value */
   value?: string;
   /** 显示字段名，默认 title */
   title?: string;

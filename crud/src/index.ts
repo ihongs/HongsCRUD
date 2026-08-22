@@ -576,10 +576,12 @@ export class Cradle implements Crud {
    * cols 仅过滤顶层字段
    */
   schema(params: SchemaParams, _ctx: Context): SchemaResult {
+    const { cols } = params;
     const schema = this.getSchema();
     const opts   = (schema as any).options || {};
+    const keys   = cols ? Object.keys(cols) : [];
     const refs   = new Set<string>();
-    const node   = buildObjectNode(schema, params.cols, refs);
+    const node   = buildObjectNode(schema, cols, refs);
 
     const result: SchemaResult = {
       $schema   : 'https://json-schema.org/draft/2020-12/schema',
@@ -590,13 +592,17 @@ export class Cradle implements Crud {
     if (opts.description) result.description = opts.description;
     if (node.required   ) result.required    = node.required;
 
-    // x-datalist：仅输出被 refData 引用到的列表
-    const dataList = (schema as any).get('dataList') || {};
-    const datalist: Record<string, Record<string, any>[]> = {};
+    // x-references：仅输出被 references 引用到的列表
+    const refData = (schema as any).get('references') || {};
+    const refdata : Record<string, Record<string, any>[]> = {};
     for (const name of refs) {
-      if (dataList[name]) datalist[name] = dataList[name];
+      if (! refdata[name] && refData[name]) refdata[name] = refData[name];
     }
-    if (Object.keys(datalist).length) result['x-datalist'] = datalist;
+    // 可能有些额外引用数据与具体字段无关
+    for (const name of keys) {
+      if (! refdata[name] && refData[name]) refdata[name] = refData[name];
+    }
+    if (Object.keys(refdata).length) result['x-references'] = refdata;
 
     return result;
   }
@@ -699,7 +705,7 @@ export function findMerge(
 /**
  * 构建 object 节点
  * cols 仅过滤顶层字段
- * refs 收集用到的 dataList 键
+ * refs 收集所需引用键
  */
 export function buildObjectNode(schema: Schema, cols?: ColsSpec, refs?: Set<string>): SchemaNode {
   const node: SchemaNode = { type: 'object', properties: {} };
@@ -793,11 +799,11 @@ function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
   if (opts.immutable === true ) node['x-immutable'  ] = true;
   if (opts.countable === true ) node['x-countable'  ] = true;
 
-  if (opts.refData) {
-    node['x-ref'] = opts.refData;
-    // 无 method 即取自 dataList，记下以便按需输出
-    if (refs && ! opts.refData.method && opts.refData.list) {
-      refs.add(opts.refData.list);
+  if (opts.reference) {
+    node['x-reference'] = opts.reference;
+    // 有 items 无 method 即取自 references，记下以便按需输出
+    if (refs && opts.reference.items && ! opts.reference.method) {
+      refs.add(opts.reference.items);
     }
   }
 
