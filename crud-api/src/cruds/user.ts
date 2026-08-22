@@ -7,18 +7,17 @@ import { Cradle } from 'hongs-crud';
 const userSchema = new Schema(
   {
     username:  { type: String, unique: true },
-    password:  { type: String },
-    passsalt:  { type: String },
+    password:  { type: String, select: false },
+    passsalt:  { type: String, select: false, assign: false },
     name:      { type: String },
     avatar:    { type: String },
     email:     { type: String, index: true },
     phone:     { type: String, index: true },
     roles:     { type: [String], default: ['user'], index: true },
-    isDeleted: { type: Boolean , default: false },
   },
   {
     collection: 'users',
-    softDelete: { field: 'isDeleted' },
+    softDelete: true,
     timestamps: true,
   },
 );
@@ -38,14 +37,14 @@ export class User extends Cradle {
     super(userSchema);
   }
 
-  override add(data: Record<string, any>): string {
+  override add(data: Record<string, any>): [ any, string ] {
     if (typeof data.password === 'string' && data.password.length > 0) {
       Object.assign(data, hashPassword(data.password));
     }
     return super.add(data);
   }
 
-  override set(id: string, data: Record<string, any>): number {
+  override set(id: string, data: Record<string, any>): [ any, number ] {
     if (typeof data.password === 'string' && data.password.length > 0) {
       Object.assign(data, hashPassword(data.password));
     }

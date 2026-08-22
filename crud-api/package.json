@@ -6,19 +6,20 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "init-admin": "tsx src/scripts/init-admin.ts"
   },
   "dependencies": {
+    "hongs-crud": "^0.1.6",
     "koa": "^2.15.0",
     "koa-bodyparser": "^4.4.1",
-    "mongoose": "^8.0.0",
-    "hongs-crud": "^0.1.5"
+    "mongoose": "^8.0.0"
   },
   "devDependencies": {
-    "tsx": "^4.7.0",
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0",
     "@types/koa": "^2.15.0",
-    "@types/koa-bodyparser": "^4.3.12"
+    "@types/koa-bodyparser": "^4.3.12",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.0.0"
   }
 }
