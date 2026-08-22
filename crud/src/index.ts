@@ -372,7 +372,7 @@ export class Cradle implements Crud {
       return Promise.all([
         buildQuery().exec(),
         Model.findOne(cond).skip(start + limit).select('_id').lean().exec(),
-      ]).then(([items, more]) => ({ items, more })) as unknown as SearchResult;
+      ]).then(([items, more]) => ({ items, more: !!more })) as unknown as SearchResult;
     }
 
     return Promise.all([
@@ -594,13 +594,17 @@ export class Cradle implements Crud {
 
     // x-references：仅输出被 references 引用到的列表
     const refData = (schema as any).get('references') || {};
-    const refdata : Record<string, Record<string, any>[]> = {};
-    for (const name of refs) {
-      if (! refdata[name] && refData[name]) refdata[name] = refData[name];
-    }
-    // 可能有些额外引用数据与具体字段无关
-    for (const name of keys) {
-      if (! refdata[name] && refData[name]) refdata[name] = refData[name];
+    let refdata: Record<string, Record<string, any>[]> = {};
+    if (cols !== undefined) {
+      for (const name of refs) {
+        if (! refdata[name] && refData[name]) refdata[name] = refData[name];
+      }
+      // 可能有些额外引用数据与具体字段无关
+      for (const name of keys) {
+        if (! refdata[name] && refData[name]) refdata[name] = refData[name];
+      }
+    } else {
+      refdata = refData;
     }
     if (Object.keys(refdata).length) result['x-references'] = refdata;
 

@@ -3,7 +3,7 @@
 // 前置：本地 MongoDB 已启动（默认 mongodb://127.0.0.1:27017）
 
 import mongoose from 'mongoose';
-import { Cradle, CrudError, CrudErrno } from '../src/cruds';
+import { Cradle, CrudError, CrudErrno } from '../src/index';
 
 const MONGO_URI = 'mongodb://127.0.0.1:27017/test';
 const DB_NAME   = 'test';
@@ -12,14 +12,14 @@ const COLL_NAME = 'testCrud';
 // schema：含 required/enum/自定义 validator，用于验证 update 路径走 doc.save 后 validator 是否生效
 const schema = new mongoose.Schema({
   name  : { type: String, required: true, maxlength: 20 },
-  status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft', refData: { list: 'status' } },
+  status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft', reference: 'status' },
   age   : { type: Number, min: 0, max: 150 },
   tags  : { type: [String] },
   secret: { type: String, select: false },
 }, {
   collection: COLL_NAME,
   softDelete: true,   // 启用软删除
-  dataList  : {
+  references  : {
     status: [
       { value: 'draft'    , title: '草稿'   },
       { value: 'published', title: '已发布' },
@@ -102,8 +102,8 @@ async function main(): Promise<void> {
   assertOk('schema.age minimum/maximum', s.properties.age.minimum === 0 && s.properties.age.maximum === 150);
   assertOk('schema.tags 为 array of string', s.properties.tags.type === 'array' && s.properties.tags.items.type === 'string');
   assertOk('schema.secret 为 writeOnly', s.properties.secret.writeOnly === true);
-  assertOk('schema.status 含 x-ref', !!s.properties.status['x-ref']);
-  assertOk('schema 含 x-datalist.status', !!s['x-datalist'] && !!s['x-datalist'].status);
+  assertOk('schema.status 含 x-reference', !!s.properties.status['x-reference']);
+  assertOk('schema 含 x-references.status', !!s['x-references'] && !!s['x-references'].status);
   const sCols = await callSchema({ cols: { name: 1 } });
   assertOk('schema cols 只输出 name', Object.keys(sCols.properties).join(',') === 'name');
 
@@ -134,75 +134,73 @@ async function main(): Promise<void> {
   // ---------- 3) search ----------
   console.log('\n--- 3) search() ---');
   // 注意：search 默认 limit = 1，需显式传 limit 才能返回多条
-  // 默认返回 list（count 为 undefined）
+  // 默认返回 { items, total }
   const listAll = await callSearch({ limit: 100 });
-  assert('返回 3 条', listAll.list.length, 3);
-  assertOk('未返回 count', listAll.count === undefined);
+  assertOk('no mode 返回 3 条', listAll.items.length === 3 && listAll.total === 3);
 
-  // count: 'all' 同时返回 list + 总数
-  const listAll2 = await callSearch({ limit: 100, count: 'all' });
-  assert('count:all list = 3', listAll2.list.length, 3);
-  assert('count:all count = 3', listAll2.count, 3);
+  // mode: 'only-items' 只返回 items
+  const onlyItems = await callSearch({ mode: 'only-items' });
+  assertOk('mode:only-items 只有 items', onlyItems.items && onlyItems.count === undefined);
 
-  // count: 'only' 只返回 count
-  const onlyCount = await callSearch({ count: 'only' });
-  assertOk('count:only 只有 count', onlyCount.count === 3 && !onlyCount.list);
+  // mode: 'only-total' 只返回 total
+  const onlyCount = await callSearch({ mode: 'only-total' });
+  assertOk('mode:only-total 只有 total', onlyCount.total && onlyCount.items === undefined);
 
-  // count: 'next' 探测下一页
-  const next1 = await callSearch({ start: 0, limit: 2, count: 'next' });
-  assert('count:next list = 2', next1.list.length, 2);
-  assert('count:next count = 1（还有 1 条）', next1.count, 1);
-  const next2 = await callSearch({ start: 2, limit: 2, count: 'next' });
-  assert('count:next 末页 count = 0', next2.count, 0);
+  // mode: 'has-more' 探测更多
+  const next1 = await callSearch({ start: 0, limit: 2, mode: 'has-more' });
+  assert('mode:has-more items = 2', next1.items.length, 2);
+  assert('mode:has-more more = true' , next1.more, true );
+  const next2 = await callSearch({ start: 2, limit: 2, mode: 'has-more' });
+  assert('mode:has-more more = false', next2.more, false);
 
   // find 条件过滤
   const findPub = await callSearch({ limit: 100, find: { status: 'published' } });
-  assert('find status=published → 1 条', findPub.list.length, 1);
-  assert('find 命中 bob', findPub.list[0].name, 'bob');
+  assert('find status=published → 1 条', findPub.items.length, 1);
+  assert('find 命中 bob', findPub.items[0].name, 'bob');
 
   // cols 投影
   const proj = await callSearch({ cols: { name: 1 }, limit: 100, find: { name: 'alice' } });
-  assert('cols 只返回 name', Object.keys(proj.list[0].toObject ? proj.list[0].toObject() : proj.list[0]).filter(k => !k.startsWith('_') && k !== '__v').sort(), ['name']);
+  assert('cols 只返回 name', Object.keys(proj.items[0].toObject ? proj.items[0].toObject() : proj.items[0]).filter(k => !k.startsWith('_') && k !== '__v').sort(), ['name']);
 
   // sort
   const sortedDesc = await callSearch({ limit: 100, sort: { age: -1 }, count: 'all' });
   assert('sort age desc → carol/bob/alice',
-    sortedDesc.list.map((d: any) => d.name).join(','), 'carol,bob,alice');
+    sortedDesc.items.map((d: any) => d.name).join(','), 'carol,bob,alice');
 
   // start + limit 分页
   const page1 = await callSearch({ sort: { age: 1 }, start: 0, limit: 2 });
   const page2 = await callSearch({ sort: { age: 1 }, start: 2, limit: 2 });
-  assert('page1 = alice,bob', page1.list.map((d: any) => d.name).join(','), 'alice,bob');
-  assert('page2 = carol'    , page2.list.map((d: any) => d.name).join(','), 'carol');
+  assert('page1 = alice,bob', page1.items.map((d: any) => d.name).join(','), 'alice,bob');
+  assert('page2 = carol'    , page2.items.map((d: any) => d.name).join(','), 'carol');
 
   // 按 id 查
   const byId = await callSearch({ id: c1.id });
-  assert('按 id 查到 alice', byId.list[0].name, 'alice');
+  assert('按 id 查到 alice', byId.items[0].name, 'alice');
   const byIds = await callSearch({ limit: 100, id: [c1.id, c2.id] });
-  assert('按 id 数组查到 2 条', byIds.list.length, 2);
+  assert('按 id 数组查到 2 条', byIds.items.length, 2);
 
   // select: false，search 默认不返回
   const secretHidden = await callSearch({ id: c1.id });
-  const secretDoc    = secretHidden.list[0].toObject ? secretHidden.list[0].toObject() : secretHidden.list[0];
+  const secretDoc    = secretHidden.items[0].toObject ? secretHidden.items[0].toObject() : secretHidden.list[0];
   assertOk('select:false 字段默认不返回（secret 不可见）', secretDoc.secret === undefined);
 
   // ---------- 4) update ----------
   console.log('\n--- 4) update() ---');
   // 单条更新
   const u1 = await callUpdate({ id: c1.id, data: { age: 21 } });
-  assert('单条 update count = 1', u1.count, 1);
+  assert('单条 update affected = 1', u1.affected, 1);
   const afterU1 = await callSearch({ id: c1.id });
-  assert('update 后 age = 21', afterU1.list[0].age, 21);
+  assert('update 后 age = 21', afterU1.items[0].age, 21);
 
-  // 值未变（同值 update）→ count = 0
+  // 值未变（同值 update）→ affected = 0
   const u1Same = await callUpdate({ id: c1.id, data: { age: 21 } });
-  assert('同值 update count = 0', u1Same.count, 0);
+  assert('同值 update affected = 0', u1Same.affected, 0);
 
   // 批量更新
   const uMulti = await callUpdate({ id: [c1.id, c2.id, c3.id], data: { tags: ['updated'] } });
-  assert('批量 update count = 3', uMulti.count, 3);
+  assert('批量 update affected = 3', uMulti.affected, 3);
   const afterUMulti = await callSearch({ limit: 100, find: { 'tags': 'updated' } });
-  assert('批量更新后 3 条都含 updated', afterUMulti.list.length, 3);
+  assert('批量更新后 3 条都含 updated', afterUMulti.items.length, 3);
 
   // update 走 doc.save，自定义 enum 校验生效
   try {
@@ -232,16 +230,16 @@ async function main(): Promise<void> {
 
   // update 不存在 id 但 force=true → 不抛错，count = 0
   const uForce = await callUpdate({ id: '507f1f77bcf86cd799439011', data: { age: 99 }, force: true });
-  assert('update 不存在 id (force=true) count = 0', uForce.count, 0);
+  assert('update 不存在 id (force=true) affected = 0', uForce.affected, 0);
 
   // ---------- 5) delete ----------
   console.log('\n--- 5) delete()（软删除） ---');
   const d1 = await callDelete({ id: c3.id });
-  assert('软删 1 条 count = 1', d1.count, 1);
+  assert('软删 1 条 affected = 1', d1.affected, 1);
 
   // 软删后 search 默认查不到（自动应用 softDeleteCond）
   const afterDel = await callSearch({ id: c3.id });
-  assert('软删后 search 查不到', afterDel.list.length, 0);
+  assert('软删后 search 查不到', afterDel.items.length, 0);
 
   // 但文档仍存在（只是 isDeleted=true, isDeleted 为 select:false 需显式选取）
   const rawDoc: any = await crud.getModel().findById(c3.id).select('+isDeleted').lean().exec();
@@ -249,13 +247,13 @@ async function main(): Promise<void> {
 
   // 重复软删同一条 → 值未变，count = 0
   const d1Again = await callDelete({ id: c3.id });
-  assert('重复软删 count = 0', d1Again.count, 0);
+  assert('重复软删 affected = 0', d1Again.affected, 0);
 
   // 批量软删
   const dMulti = await callDelete({ id: [c1.id, c2.id] });
-  assert('批量软删 count = 2', dMulti.count, 2);
+  assert('批量软删 affected = 2', dMulti.affected, 2);
   const afterMulti = await callSearch({});
-  assert('全部软删后 list = 0', afterMulti.list.length, 0);
+  assert('全部软删后 items = 0', afterMulti.items.length, 0);
 
   // delete 不存在 id 且 force=false → 抛 UNOPERABLE
   try {
@@ -268,7 +266,7 @@ async function main(): Promise<void> {
 
   // delete 不存在 id 但 force=true → 不抛错
   const dForce = await callDelete({ id: '507f1f77bcf86cd799439011', force: true });
-  assert('delete 不存在 id (force=true) count = 0', dForce.count, 0);
+  assert('delete 不存在 id (force=true) affected = 0', dForce.affected, 0);
 
   // ---------- 6) 软删除 + find 联动 ----------
   console.log('\n--- 6) 软删除与 find 联动 ---');
@@ -277,13 +275,11 @@ async function main(): Promise<void> {
   await callCreate({ name: 'p2', status: 'draft', age: 20 });
   // 软删 p1
   const p1 = await callSearch({ find: { name: 'p1' } });
-  await callDelete({ id: p1.list[0]._id.toString() });
+  await callDelete({ id: p1.items[0]._id.toString() });
   // 默认 search 只返回未软删
   const remain = await callSearch({ find: { status: 'draft' } });
-  assert('软删后 search 只剩 p2', remain.list.map((d: any) => d.name).join(','), 'p2');
-  // count: 'all' 也应只算未软删
-  const remainCount = await callSearch({ find: { status: 'draft' }, count: 'all' });
-  assert('count:all 也排除软删', remainCount.count, 1);
+  assert('软删后 search 只剩 p2', remain.items.map((d: any) => d.name).join(','), 'p2');
+  assert('软删后 search 数量也变', remain.total, 1);
 
   // ---------- 7) upsert ----------
   console.log('\n--- 7) upsert() ---');
@@ -293,7 +289,7 @@ async function main(): Promise<void> {
   const existDoc = await callCreate({ name: 'exist', status: 'draft', age: 18 });
 
   const imp = await callUpsert({
-    list: [
+    items: [
       // 没 _id → 添加
       { name: 'new1', status: 'draft', age: 22 },
       // 有 _id 且存在 → 更新
@@ -320,12 +316,12 @@ async function main(): Promise<void> {
 
   // 验证更新生效
   const updatedDoc = await callSearch({ id: existDoc.id });
-  assert('upsert 更新后 age = 33', updatedDoc.list[0].age, 33);
-  assert('upsert 更新后 name = exist-updated', updatedDoc.list[0].name, 'exist-updated');
+  assert('upsert 更新后 age = 33', updatedDoc.items[0].age, 33);
+  assert('upsert 更新后 name = exist-updated', updatedDoc.items[0].name, 'exist-updated');
 
   // 验证添加生效
   const addedDoc = await callSearch({ find: { name: 'new1' } });
-  assert('upsert 添加 new1 成功', addedDoc.list.length, 1);
+  assert('upsert 添加 new1 成功', addedDoc.items.length, 1);
 
   console.log(`\n=== Result: ${pass} passed, ${fail} failed ===`);
   await mongoose.disconnect();
