@@ -16,7 +16,7 @@ const CTX       = { uid: 'tester' };
 /* ----------        P 查询进阶 / L 全文覆盖 / M 加字段 / T 增量水位 ---------- */
 
 const schemaF = new mongoose.Schema({
-  name  : { type: String },
+  name  : { type: String, textable: true },                                // 入全文，wd 可搜
   status: { type: String, enum: ['draft', 'published'], countable: true },
   role  : { type: String, enum: ['admin', 'user']     , countable: true },
   age   : { type: Number, countable: true },
@@ -25,7 +25,7 @@ const schemaF = new mongoose.Schema({
 }, { collection: 'testChaserF', esIndex: 'hongs-test-chaser-f' } as any);
 
 const schemaN = new mongoose.Schema({
-  name  : { type: String },
+  name  : { type: String, textable: true },
   status: { type: String, enum: ['a', 'b'], countable: true },
   works : { type: [new mongoose.Schema({
     tag: { type: String, enum: ['x', 'y'], countable: true },
@@ -43,24 +43,27 @@ const schemaZ = new mongoose.Schema({
   status: { type: String, enum: ['on', 'off'], countable: true },
 }, { collection: 'testChaserZ', esIndex: 'hongs-test-chaser-z', esAutoSync: false, softDelete: true } as any);
 
-// 任务 13：canSync / canText / select:false / 字段级 analyzer / nested 内文本，Schema 级 esAnalyzer
+// 任务 13：syncable / textable / select:false / 字段级 analyzer / nested 内文本，Schema 级 esAnalyzer
 const schemaP = new mongoose.Schema({
-  name  : { type: String },                                     // text，入全文
-  note  : { type: String, canText: false },                     // text，入索引但不并入全文
-  secret: { type: String, canSync: false },                     // 不入索引，find / sort / wd 均不可用
-  hidden: { type: String, select: false },                      // 入索引可查，默认不随文档返回
+  name  : { type: String, textable: true },                       // 入全文，主 keyword + .text 子字段
+  note  : { type: String },                                       // 默认非 textable：入索引可 find，不并入全文
+  secret: { type: String, syncable: false },                      // 不入索引，find / sort / wd 均不可用
+  hidden: { type: String, textable: true, select: false },        // 入索引入全文，默认不随文档返回
   status: { type: String, enum: ['draft', 'published'], countable: true },
-  body  : { type: String, analyzer: 'whitespace' },             // 字段级分词器，覆盖 esAnalyzer
-  essay : { type: String, cutText: 0 },                         // 不声明 keyword 子字段，只搜不精确匹配
-  story : { type: String, cutText: -1 },                        // keyword 不限长，超长串也能精确匹配
-  memo  : { type: String, cutText: 100 },                       // 自定义截断阈值
-  arts  : { type: [new mongoose.Schema({ title: String, qty: Number })], nested: true },   // nested 内 text 入全文
+  body  : { type: String, textable: true, analyzer: 'whitespace' },   // 字段级分词器，覆盖 esAnalyzer
+  essay : { type: String, textable: true, termsize: 0 },          // 无 keyword 视角，主字段纯 text，只搜不精确匹配
+  story : { type: String, textable: true, termsize: -1 },         // keyword 不限长，超长串也能精确匹配
+  memo  : { type: String, textable: true, termsize: 100 },        // 自定义截断阈值
+  arts  : { type: [new mongoose.Schema({
+    title: { type: String, textable: true },                      // nested 内 text 入全文
+    qty  : { type: Number },
+  })], nested: true },
 }, { collection: 'testChaserP', esIndex: 'hongs-test-chaser-p', esAnalyzer: 'simple' } as any);
 // simple / whitespace 均为 ES 内建分词器，无需安装插件
 
 // 任务 13：getFullText 覆盖组（status 为码值，默认不参与全文）
 const schemaL = new mongoose.Schema({
-  name  : { type: String },
+  name  : { type: String, textable: true },
   status: { type: String, enum: ['draft', 'published'] },
 }, { collection: 'testChaserL', esIndex: 'hongs-test-chaser-l' } as any);
 
@@ -305,49 +308,54 @@ async function main(): Promise<void> {
   assert('counts total = 1', (await counts(cz, { })).total, 1);
   assert('mongo 伪删记录保留', await MZ.countDocuments({ }), 2);
 
-  /* ---------- 8) 任务 13：canSync / select:false / canText / 分词器 ---------- */
-  console.log('\n--- 8) 进阶组 P：canSync / select:false / canText / 分词器 ---');
+  /* ---------- 8) 任务 13：syncable / select:false / textable / 分词器 ---------- */
+  console.log('\n--- 8) 进阶组 P：syncable / select:false / textable / 分词器 ---');
 
-  // 非 text 字段标 analyzer：配置矛盾，构造期即报
+  // 非 textable 字段标 analyzer：配置矛盾，构造期即报
   const schemaBad1 = new mongoose.Schema(
     { n: { type: Number, analyzer: 'standard' } }, { collection: 'testChaserBad1' } as any);
-  assert('非 text 字段标 analyzer 构造抛 INTERNEL_ERROR', await errnoOf(() => new Chaser(schemaBad1, undefined, es)), -32603);
-  // countable 却 canSync: false：同为配置矛盾
+  assert('非 textable 字段标 analyzer 构造抛 INTERNEL_ERROR', await errnoOf(() => new Chaser(schemaBad1, undefined, es)), -32603);
+  // String 未开 textable 却标 analyzer：同样矛盾
+  const schemaBad3 = new mongoose.Schema(
+    { s: { type: String, analyzer: 'standard' } }, { collection: 'testChaserBad3' } as any);
+  assert('String 非 textable 标 analyzer 构造抛 INTERNEL_ERROR', await errnoOf(() => new Chaser(schemaBad3, undefined, es)), -32603);
+  // countable 却 syncable: false：同为配置矛盾
   const schemaBad2 = new mongoose.Schema(
-    { s: { type: String, countable: true, canSync: false } }, { collection: 'testChaserBad2' } as any);
-  assert('countable 且 canSync:false 构造抛 INTERNEL_ERROR', await errnoOf(() => new Chaser(schemaBad2, undefined, es)), -32603);
+    { s: { type: String, countable: true, syncable: false } }, { collection: 'testChaserBad2' } as any);
+  assert('countable 且 syncable:false 构造抛 INTERNEL_ERROR', await errnoOf(() => new Chaser(schemaBad2, undefined, es)), -32603);
 
   const cp = new Chaser(schemaP, MP, es);
   await MP.deleteMany({});
   await cp.initIndex();
 
   const mapP = cp.getMapping().properties as Record<string, any>;
-  assert('mapping：Schema 级 esAnalyzer 落到 text 字段', mapP.name,
-    { type: 'text', analyzer: 'simple', fields: { keyword: { type: 'keyword', ignore_above: 256 } } });
-  assert('mapping：字段级 analyzer 覆盖 esAnalyzer', mapP.body.analyzer, 'whitespace');
+  assert('mapping：String 主类型 keyword，textable 附 .text 子字段并落 esAnalyzer', mapP.name,
+    { type: 'keyword', ignore_above: 256, fields: { text: { type: 'text', analyzer: 'simple' } } });
+  assert('mapping：字段级 analyzer 覆盖 esAnalyzer（.text 子字段上）', mapP.body.fields.text.analyzer, 'whitespace');
+  assert('mapping：非 textable 的 String 为纯 keyword', mapP.note, { type: 'keyword', ignore_above: 256 });
   assert('mapping：合并字段取 esAnalyzer', mapP.fullText, { type: 'text', analyzer: 'simple' });
-  assert('mapping：同步戳为 date', mapP.syntTime, { type: 'date' });
-  assert('mapping：canSync:false 字段不出现', 'secret' in mapP, false);
-  assert('mapping：select:false 字段照常入索引', mapP.hidden.type, 'text');
-  assert('mapping：cutText:0 不声明 keyword 子字段', mapP.essay, { type: 'text', analyzer: 'simple' });
-  assert('mapping：cutText:-1 的 keyword 不限长', mapP.story,
-    { type: 'text', analyzer: 'simple', fields: { keyword: { type: 'keyword' } } });
-  assert('mapping：cutText:n 落为 ignore_above', mapP.memo,
-    { type: 'text', analyzer: 'simple', fields: { keyword: { type: 'keyword', ignore_above: 100 } } });
+  assert('mapping：同步戳为 date', mapP.syncTime, { type: 'date' });
+  assert('mapping：syncable:false 字段不出现', 'secret' in mapP, false);
+  assert('mapping：select:false 字段照常入索引', mapP.hidden.type, 'keyword');
+  assert('mapping：termsize:0 无 keyword 视角，主字段纯 text', mapP.essay, { type: 'text', analyzer: 'simple' });
+  assert('mapping：termsize:-1 的 keyword 不限长', mapP.story,
+    { type: 'keyword', fields: { text: { type: 'text', analyzer: 'simple' } } });
+  assert('mapping：termsize:n 落为 ignore_above', mapP.memo,
+    { type: 'keyword', ignore_above: 100, fields: { text: { type: 'text', analyzer: 'simple' } } });
   assert('mapping：nested 容器声明 strict 与子字段', mapP.arts,
     { type: 'nested', dynamic: 'strict', properties: {
-      title: { type: 'text', analyzer: 'simple', fields: { keyword: { type: 'keyword', ignore_above: 256 } } },
+      title: { type: 'keyword', ignore_above: 256, fields: { text: { type: 'text', analyzer: 'simple' } } },
       qty  : { type: 'double' },
     } });
 
-  assert('getSyncable：点号路径齐全、排除 canSync:false', [ ...cp.getSyncable() ].sort(),
+  assert('getSyncable：点号路径齐全、排除 syncable:false', [ ...cp.getSyncable() ].sort(),
     ['arts.qty', 'arts.title', 'body', 'essay', 'hidden', 'memo', 'name', 'note', 'status', 'story']);
-  assert('getTextable：排除 canText:false 与非 text', [ ...cp.getTextable() ].sort(),
+  assert('getTextable：仅 textable:true 的 String，排除 note / status', [ ...cp.getTextable() ].sort(),
     ['arts.title', 'body', 'essay', 'hidden', 'memo', 'name', 'story']);
   assert('getCountable', [ ...cp.getCountable() ].sort(), ['status']);
 
   const esMapP = (await es.indices.getMapping({ index: cp.getIndex() })) as any;
-  assert('ES 侧 mapping：analyzer 已落地', esMapP[cp.getIndex()].mappings.properties.body.analyzer, 'whitespace');
+  assert('ES 侧 mapping：analyzer 已落地', esMapP[cp.getIndex()].mappings.properties.body.fields.text.analyzer, 'whitespace');
 
   const [ p8 ] = await (cp.add({
     name: 'paper one', note: 'zebra coffee', secret: 'topsecret', hidden: 'hid-one',
@@ -356,18 +364,18 @@ async function main(): Promise<void> {
   }) as unknown as Promise<[any, string]>);
   await refresh(cp);
 
-  assert('find canSync:false 字段抛 PARAMS_INVALID', await errnoOf(() => cp.search({ find: { secret: 'x' } }, CTX as any)), -32602);
-  assert('sort canSync:false 字段抛 PARAMS_INVALID', await errnoOf(() => cp.search({ sort: { secret: 1 } }, CTX as any)), -32602);
-  assert('wd 搜不到 canSync:false 的内容', await names(cp, { wd: 'topsecret' }), [ ]);
-  assert('wd 搜不到 canText:false 的内容', await names(cp, { wd: 'zebra' }), [ ]);
-  assert('canText:false 仍可 find 精确查', await names(cp, { find: { note: 'zebra coffee' } }), ['paper one']);
+  assert('find syncable:false 字段抛 PARAMS_INVALID', await errnoOf(() => cp.search({ find: { secret: 'x' } }, CTX as any)), -32602);
+  assert('sort syncable:false 字段抛 PARAMS_INVALID', await errnoOf(() => cp.search({ sort: { secret: 1 } }, CTX as any)), -32602);
+  assert('wd 搜不到 syncable:false 的内容', await names(cp, { wd: 'topsecret' }), [ ]);
+  assert('wd 搜不到非 textable 的内容', await names(cp, { wd: 'zebra' }), [ ]);
+  assert('非 textable 仍可 find 精确查', await names(cp, { find: { note: 'zebra coffee' } }), ['paper one']);
   assert('wd 命中 nested 子文档内文本', await names(cp, { wd: 'deep' }), ['paper one']);
   assert('wd 命中普通 text 字段', await names(cp, { wd: 'paper' }), ['paper one']);
 
-  // cutText 只改 mapping，查询侧不做判断：0 的字段等值静默不命中，-1 的超长串照常精确匹配
-  assert('cutText:0 的字段照常入全文', await names(cp, { wd: 'cities' }), ['paper one']);
-  assert('cutText:0 的字段等值静默不命中', await names(cp, { find: { essay: 'tale of two cities' } }), [ ]);
-  assert('cutText:-1 的超长串（300 字符）仍可精确匹配', await names(cp, { find: { story: 'y'.repeat(300) } }), ['paper one']);
+  // termsize 只改 mapping，查询侧不做判断：0 的字段等值静默不命中，-1 的超长串照常精确匹配
+  assert('termsize:0 的字段照常入全文', await names(cp, { wd: 'cities' }), ['paper one']);
+  assert('termsize:0 的字段等值静默不命中', await names(cp, { find: { essay: 'tale of two cities' } }), [ ]);
+  assert('termsize:-1 的超长串（300 字符）仍可精确匹配', await names(cp, { find: { story: 'y'.repeat(300) } }), ['paper one']);
 
   const hidHit = await cp.search({ find: { hidden: 'hid-one' }, limit: 10 }, CTX as any);
   assert('select:false 字段可查', hidHit.total, 1);
@@ -424,8 +432,7 @@ async function main(): Promise<void> {
   const esMapM = (await es.indices.getMapping({ index: cm2.getIndex() })) as any;
   const esPropsM = esMapM[cm2.getIndex()].mappings.properties;
   assert('ES 侧旧字段定义不变', esPropsM.name, cm2.getMapping().properties.name);
-  assert('ES 侧新字段已入 mapping', esPropsM.nick,
-    { type: 'text', fields: { keyword: { type: 'keyword', ignore_above: 256 } } });
+  assert('ES 侧新字段已入 mapping', esPropsM.nick, { type: 'keyword', ignore_above: 256 });
 
   await MM.updateOne({ name: 'm one' }, { $set: { nick: 'nicky' } });   // 绕过 Chaser，ES 滞后
   assert('回填前新字段查不到', await names(cm2, { find: { nick: 'nicky' } }), [ ]);
@@ -473,7 +480,7 @@ async function main(): Promise<void> {
   // 现实中的孤立记录来自 mongo 侧硬删 / 索引滞后，id 本就由 mongo 产生）
   await es.index({
     index: ct.getIndex(), id: '0123456789abcdef01234567',
-    document: { name: 'orphan one', status: 'on', fullText: 'orphan one', syntTime: new Date(Date.now() - 60000) },
+    document: { name: 'orphan one', status: 'on', fullText: 'orphan one', syncTime: new Date(Date.now() - 60000) },
   });
   await refresh(ct);
   const orphanHit = await ct.search({ find: { name: 'orphan one' }, limit: 10 }, CTX as any);
@@ -488,7 +495,7 @@ async function main(): Promise<void> {
   const staleDoc = await MT.findOne({ name: 'inc one' });
   await es.index({
     index: ct.getIndex(), id: String((staleDoc as any)?._id),
-    document: { name: 'inc one', status: 'on', syntTime: new Date(Date.now() - 120000) },
+    document: { name: 'inc one', status: 'on', syncTime: new Date(Date.now() - 120000) },
   });
   await refresh(ct);
   assert('旧同步戳文档仍在索引', (await ct.search({ }, CTX as any)).total, 4);

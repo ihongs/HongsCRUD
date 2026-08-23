@@ -9,16 +9,30 @@
 
 import type { Schema, Model } from 'mongoose';
 import type { Client } from '@elastic/elasticsearch';
-import type { SyncOpts, SyncFindOpts, SyncPurgeOpts, SyncStat, EsOpts, EsLeaf } from './types';
+import type { SyncOpts, SyncFindOpts, SyncPurgeOpts, SyncStat, EsOpts, EsLeaf, EsCond } from './types';
 import type { FindSpec, SortSpec, ColsSpec, SearchParams, SearchResult, CountsParams, CountsResult, Context } from '../types';
 import { Cradle, CrudError, CrudErrno } from '../index';
 
 export * from './types';
 
-/** terms 聚合 size 上限约定值（ES search.max_buckets 默认），top 为 0（不限）时取它，见 4 节 */
-const TERMS_MAX = 65536;
+/* ---------- 全局 ES 客户端 ---------- */
+
+const ES_CLIENT: { es?: Client } = {};
+
+/** 注册全局默认 ES 客户端，构造 Chaser 时可不传 es */
+export function setEsClient(client: Client): void {
+  ES_CLIENT.es = client;
+}
+
+/** 读取全局默认 ES 客户端 */
+export function getEsClient(): Client | undefined {
+  return ES_CLIENT.es;
+}
 
 /* ---------- Chaser ---------- */
+
+/** terms 聚合 size 上限约定值（ES search.max_buckets 默认），top 为 0（不限）时取它，见 4 节 */
+const TERMS_MAX = 65536;
 
 export class Chaser extends Cradle {
   private readonly _es?    : Client;
@@ -44,18 +58,18 @@ export class Chaser extends Cradle {
     this._esOpts = {
       esIndex    : sopts.esIndex || schema.options.collection,
       esFullText : sopts.esFullText  || 'fullText',
-      esSyntTime : sopts.esSyntTime  || 'syntTime',
+      esSyncTime : sopts.esSyncTime  || 'syncTime',
       esAnalyzer : sopts.esAnalyzer,
       esAutoSync : sopts.esAutoSync !== undefined ? sopts.esAutoSync : true,
       esSyncError: sopts.esSyncError || console.error,
     };
 
-    // 软删除标记不入索引（视同 canSync: false，见 1.1）
+    // 软删除标记不入索引（视同 syncable: false，见 1.1）
     const skipRoot = new Set<string>();
     const sd = this.getSoftDelete();
     if (sd) {
       skipRoot.add(sd.isDeleted || 'isDeleted');
-      skipRoot.add(sd.deletedAt   || 'deletedAt');
+      skipRoot.add(sd.deletedAt || 'deletedAt');
     }
 
     // 推导 mapping 与字段清单（叶子含子文档点号路径，容器按声明取 nested / object）
@@ -109,12 +123,12 @@ export class Chaser extends Cradle {
     return this._mapping;
   }
 
-  /** 入索引字段名集合（含子文档点号路径），即排除 canSync: false 后的可映射字段 */
+  /** 入索引字段名集合（含子文档点号路径），即排除 syncable: false 后的可映射字段 */
   getSyncable(): Set<string> {
     return this._syncable;
   }
 
-  /** 参与全文的文本字段名集合，即入索引的 text 字段再排除 canText: false */
+  /** 参与全文的文本字段名集合，即标了 textable: true 的 String（默认不并入，见 1.1） */
   getTextable(): Set<string> {
     return this._textable;
   }
@@ -162,7 +176,7 @@ export class Chaser extends Cradle {
 
   /* ---------- 索引管理 ---------- */
 
-  /** 确保索引存在：不存在则按 getMapping() 创建，已存在则不动（幂等）；memo 命中后直接放行 */
+  /** 确认索引：不存在则按 getMapping() 创建，已存在则不动（幂等）；memo 命中后直接放行 */
   async makeIndex(): Promise<void> {
     if (this._indexReady) return;
     const es    = this.getClient();
@@ -221,7 +235,7 @@ export class Chaser extends Cradle {
    * find 全部进 filter 上下文不计分；wd 非空时追加 match 到 must 参与打分，空则整个查询都在 filter 上下文
    */
   getQuery(find?: FindSpec, id?: string | string[], wd?: string): Record<string, any> {
-    const conds: Cond[] = [];
+    const conds: EsCond[] = [];
     if (find) this.collectAnd([find], conds);
     if (id !== undefined) {
       // ES 文档 _id 即 mongo _id 的字符串形式，见 2.2
@@ -241,7 +255,7 @@ export class Chaser extends Cradle {
    * 收集 and 语境的条件：对象多键为隐式 and，$and 各元素并入同一语境（同 nested path 才可归组，见 1.3）
    * $or / $not 的产物为完整子句，各分支独立包裹、不跨分支归组
    */
-  private collectAnd(specs: Record<string, any>[], out: Cond[]): void {
+  protected collectAnd(specs: Record<string, any>[], out: EsCond[]): void {
     for (const spec of specs) {
       for (const [key, val] of Object.entries(spec)) {
         if (key === '$and' || key === '$or') {
@@ -258,7 +272,7 @@ export class Chaser extends Cradle {
           }
           out.push({ clause: {
             bool: {
-              should: val.map(b => ({ bool: { filter: emitAnd(this.collect(b)) } })),
+              should: val.map(b => ({ bool: { filter: emitAnd(this.collectOne(b)) } })),
               minimum_should_match: 1,
             },
           } });
@@ -272,7 +286,7 @@ export class Chaser extends Cradle {
               { operator: '$not' },
             );
           }
-          const clauses = emitAnd(this.collect(val));
+          const clauses = emitAnd(this.collectOne(val));
           // 多子句须先合成整体再取非：NOT(A AND B) 不等于 NOT A AND NOT B
           out.push({ clause: clauses.length === 1
             ? { bool: { must_not: [clauses[0]] } }
@@ -285,8 +299,8 @@ export class Chaser extends Cradle {
   }
 
   /** 翻译单个 find 对象（自身为独立 and 语境）的条件，返回带 nested 链的中间态 */
-  private collect(spec: Record<string, any>): Cond[] {
-    const conds: Cond[] = [];
+  protected collectOne(spec: Record<string, any>): EsCond[] {
+    const conds: EsCond[] = [];
     this.collectAnd([spec], conds);
     return conds;
   }
@@ -296,11 +310,11 @@ export class Chaser extends Cradle {
    * 自定义的字段条件可覆盖重写此方法
    * 未入索引的字段与不支持的操作符抛 PARAMS_INVALID
    */
-  protected fieldConds(field: string, value: any, out: Cond[]): void {
+  protected fieldConds(field: string, value: any, out: EsCond[]): void {
     const leaf = this._leaves.get(field);
     if (! leaf) {
       throw new CrudError(
-        `Field "${field}" is not in the ES index (canSync: false or unmappable type).`,
+        `Field "${field}" is not in the ES index (syncable: false or unmappable type).`,
         CrudErrno.PARAMS_INVALID,
         { field },
       );
@@ -394,15 +408,15 @@ export class Chaser extends Cradle {
         }
         case '$search': {
           // 对齐 mongo 的 $text.$search：字段级分词匹配（mongo 社区版无此能力，Chaser 独有）；
-          // match 打主字段而非 .keyword（keyword 不分词），operator: and 须全部分词命中
-          if (leaf.kind !== 'text' || typeof ov !== 'string' || !ov.trim()) {
+          // match 打 .text 子字段（termsize: 0 时主字段即 text），operator: and 须全部分词命中
+          if (!leaf.textable || typeof ov !== 'string' || !ov.trim()) {
             throw new CrudError(
-              `"$search" on "${field}" expects a non-empty string on text fields.`,
+              `"$search" on "${field}" expects a non-empty string on textable fields.`,
               CrudErrno.PARAMS_INVALID,
               { field, operator: op },
             );
           }
-          push({ match: { [field]: { query: ov, operator: 'and' } } });
+          push({ match: { [textName(leaf)]: { query: ov, operator: 'and' } } });
           break;
         }
         default:
@@ -544,14 +558,14 @@ export class Chaser extends Cradle {
     return out;
   }
 
-  /** sort -> ES sort 数组：text 用 .keyword，nested 字段补 nested 与 mode（升 min / 降 max），见 1.3；protected 供子类接入脚本排序（见 README 4.4） */
+  /** sort -> ES sort 数组：打 keyword 主视角（即本名，见 termName），nested 字段补 nested 与 mode（升 min / 降 max），见 1.3；protected 供子类接入脚本排序（见 README 4.4） */
   protected getSort(sort: SortSpec): Record<string, any>[] {
     const out: Record<string, any>[] = [];
     for (const [field, dir] of Object.entries(sort)) {
       const leaf = this._leaves.get(field);
       if (!leaf) {
         throw new CrudError(
-          `Sort field "${field}" is not in the ES index (canSync: false or unmappable type).`,
+          `Sort field "${field}" is not in the ES index (syncable: false or unmappable type).`,
           CrudErrno.PARAMS_INVALID,
           { field },
         );
@@ -583,11 +597,11 @@ export class Chaser extends Cradle {
       const query = this.getQuery(find, id, wd);   // 不含 sels，各聚合自行叠加，见 4 节
 
       // sels -> 条件（空数组视为没选，不生成条件），联动语义与 Cradle.counts 一致
-      const selConds: Record<string, Cond[]> = {};
+      const selConds: Record<string, EsCond[]> = {};
       if (sels) {
         for (const [field, values] of Object.entries(sels)) {
           if (!Array.isArray(values) || !values.length) continue;
-          const conds: Cond[] = [];
+          const conds: EsCond[] = [];
           this.fieldConds(field, { $in: values }, conds);
           selConds[field] = conds;
         }
@@ -622,8 +636,8 @@ export class Chaser extends Cradle {
 
         // 除自身外的 sels：与被统计字段同 nested path（chain 为其前缀）的条件下移到 nested
         // 内部过滤（元素级联动，见 1.3），其余留在外层 filter（父文档上下文）
-        const outer : Cond[] = [];
-        const levels: Cond[][] = chain.map(() => []);
+        const outer : EsCond[] = [];
+        const levels: EsCond[][] = chain.map(() => []);
         for (const [sf, cs] of Object.entries(selConds)) {
           if (sf === f) continue;   // 已选字段统计自身时不套自己的 sels，见 4 节
           for (const c of cs) {
@@ -636,7 +650,7 @@ export class Chaser extends Cradle {
           }
         }
 
-        // terms 桶：text 用 .keyword；nested 字段经 reverse_nested 回根上下文，取 p.doc_count
+        // terms 桶：打 keyword 主视角（即本名）；nested 字段经 reverse_nested 回根上下文，取 p.doc_count
         const nav: string[] = ['t'];
         let inner: Record<string, any> = {
           t: {
@@ -770,9 +784,9 @@ export class Chaser extends Cradle {
   /** doc -> ES 文档：按 mapping 树裁剪入索引字段，拼装合并字段，同步戳置为当前时间，见 2.2 */
   private esDoc(doc: any): Record<string, any> {
     const src = pickByMapping(this._mapping, doc,
-      new Set([this._esOpts.esFullText, this._esOpts.esSyntTime])) ?? {};
+      new Set([this._esOpts.esFullText, this._esOpts.esSyncTime])) ?? {};
     src[this._esOpts.esFullText] = this.getFullText(doc);
-    src[this._esOpts.esSyntTime] = new Date();
+    src[this._esOpts.esSyncTime] = new Date();
     return src;
   }
 
@@ -839,8 +853,8 @@ export class Chaser extends Cradle {
       // delete_by_query 的 refresh 只收 boolean（bulk 才有 'wait_for'），一律归一化
       refresh: !!opts.refresh,
       query  : { bool: { should: [
-        { range: { [this._esOpts.esSyntTime]: { lt: opts.since } } },
-        { bool: { must_not: [{ exists: { field: this._esOpts.esSyntTime } }] } },
+        { range: { [this._esOpts.esSyncTime]: { lt: opts.since } } },
+        { bool: { must_not: [{ exists: { field: this._esOpts.esSyncTime } }] } },
       ], minimum_should_match: 1 } },
     } as any)) as any;
 
@@ -915,20 +929,6 @@ export class Chaser extends Cradle {
   }
 }
 
-/* ---------- 全局 ES 客户端 ---------- */
-
-const ES_CLIENT: { es?: Client } = {};
-
-/** 注册全局默认 ES 客户端，构造 Chaser 时可不传 es */
-export function setEsClient(client: Client): void {
-  ES_CLIENT.es = client;
-}
-
-/** 读取全局默认 ES 客户端 */
-export function getEsClient(): Client | undefined {
-  return ES_CLIENT.es;
-}
-
 /* ---------- Helpers：mapping 推导 ---------- */
 
 /**
@@ -944,7 +944,7 @@ function deriveLeaf(
 ): EsLeaf | undefined {
   let kind: EsLeaf['kind'];
   switch (instance) {
-    case 'String'    : kind = opts.enum ? 'keyword' : 'text'; break;
+    case 'String'    : kind = 'keyword'; break;   // String 主类型 keyword，textable 附 .text 子字段，见 leafMapping
     case 'ObjectId'  :
     case 'ObjectID'  : kind = 'keyword'; break;
     case 'Number'    :
@@ -953,19 +953,22 @@ function deriveLeaf(
     case 'Date'      : kind = 'date'   ; break;
     default          : return undefined;
   }
-  if (opts.analyzer && kind !== 'text') {
+  // textable 仅对 String 有效，其余类型标了视为未标（与旧 canText 的静默语义一致）
+  const textable = instance === 'String' && opts.textable === true;
+  const termsize = textable ? opts.termsize : undefined;   // 仅 textable 生效
+  if (opts.analyzer && !textable) {
     throw new CrudError(
-      `Field "${name}" maps to "${kind}" in ES, analyzer is for text only.`,
+      `Field "${name}" is not textable in ES, analyzer is for textable String only.`,
       CrudErrno.INTERNEL_ERROR,
-      { field: name, kind },
+      { field: name },
     );
   }
   return {
     name,
-    kind,
-    analyzer : kind === 'text' ? (opts.analyzer || esAnalyzer) : undefined,
-    textsize : kind === 'text' ?  opts.cutText  :  undefined,
-    textable : kind === 'text' && opts.canText !== false,
+    kind     : textable && termsize === 0 ? 'text' : kind,   // termsize: 0 时无 keyword 视角，主字段纯 text
+    analyzer : textable ? (opts.analyzer || esAnalyzer) : undefined,
+    termsize,
+    textable,
     countable: opts.countable === true,
   };
 }
@@ -973,23 +976,20 @@ function deriveLeaf(
 /** 叶子字段的 ES mapping（对照表见 1.2） */
 function leafMapping(leaf: EsLeaf): Record<string, any> {
   switch (leaf.kind) {
-    case 'text': {
-      // keyword 子字段（term 视角）供等值 / 排序 / 聚合；textsize 控制其截断阈值（见 1.1）：
-      // 默认 256（超过 ignore_above 的长串不进 keyword，等值匹配本就不可靠）；
-      // 0 不声明子字段（只搜不精确匹配，省索引）；-1 不限（不设 ignore_above）
-      const rst = { type: 'text' } as any;
-      const cut = leaf.textsize ?? 256;
-      if (leaf.analyzer) rst.analyzer = leaf.analyzer;
-      if (cut) {
-        if (cut > 0) {
-          rst.fields = { keyword: { type: 'keyword', ignore_above: cut } };
-        } else {
-          rst.fields = { keyword: { type: 'keyword' } };
-        }
-      }
-      return rst;
+    case 'text':
+      // textable 且 termsize: 0：无 keyword 视角，主字段直接 text（只搜不精确匹配，等值 / 排序 / 聚合不可用）
+      return { type: 'text', ...(leaf.analyzer ? { analyzer: leaf.analyzer } : {}) };
+    case 'keyword': {
+      // String / ObjectId 主类型 keyword（term 视角：等值 / 排序 / 聚合）；textable 附 .text 子字段（分词
+      // 视角：wd / $search）；termsize 控制 ignore_above（见 1.1）：默认 256（超过的长串不进 keyword，
+      // 等值匹配本就不可靠），-1 不限，仅 textable 生效
+      const size = leaf.termsize ?? 256;
+      return {
+        type: 'keyword',
+        ...(size >= 0 ? { ignore_above: size } : {}),
+        ...(leaf.textable ? { fields: { text: { type: 'text', ...(leaf.analyzer ? { analyzer: leaf.analyzer } : {}) } } } : {}),
+      };
     }
-    case 'keyword': return { type: 'keyword' };
     case 'double' : return { type: 'double' };
     case 'boolean': return { type: 'boolean' };
     case 'date'   : return { type: 'date' };
@@ -1016,15 +1016,15 @@ function walkSchema(
 
     const opts = (path as any).options || {};
 
-    // 配置矛盾：countable 却 canSync: false
-    if (opts.countable && opts.canSync === false) {
+    // 配置矛盾：countable 却 syncable: false
+    if (opts.countable && opts.syncable === false) {
       throw new CrudError(
-        `Field "${name}" is countable but canSync: false, remove one of them.`,
+        `Field "${name}" is countable but syncable: false, remove one of them.`,
         CrudErrno.INTERNEL_ERROR,
         { field: name },
       );
     }
-    if (opts.canSync === false) continue;                // 叶子或整棵子树不进索引
+    if (opts.syncable === false) continue;                // 叶子或整棵子树不进索引
 
     const full = prefix + name;
     const inst = (path as any).instance;
@@ -1092,7 +1092,7 @@ function assembleMapping(
     ...(esOpts.esAnalyzer ? { analyzer: esOpts.esAnalyzer } : {}),
   };
   // 同步戳：syncDocs 每次写入时置为当前时间，不开放给 find / sort / counts 引用
-  properties[esOpts.esSyntTime] = { type: 'date' };
+  properties[esOpts.esSyncTime] = { type: 'date' };
 
   return {
     dynamic   : 'strict',
@@ -1195,25 +1195,26 @@ function collectLeaves(node: Record<string, any>, prefix: string, out: string[])
 
 /* ---------- Helpers：find -> DSL 翻译 ---------- */
 
-/** 翻译的中间态：完整 ES 子句；叶子字段条件另带所属 nested path 链，供 and 语境归组 */
-interface Cond {
-  clause: Record<string, any>;
-  chain ?: string[];
+/**
+ * 精确匹配类子句（term / terms / regexp / range）与排序 / 聚合用的字段名：
+ * String / ObjectId 主类型即 keyword 本名；termsize: 0 的纯 text 主字段打本名（分词语义，整串不精确），见 2.1
+ */
+function termName(leaf: EsLeaf): string {
+  return leaf.name;
 }
 
 /**
- * 精确匹配类子句（term / terms / regexp / range）用的字段名：
- * text 取 .keyword 子字段（range 借它实现字典序比较，与 mongo 字符串比较一致），其余用本名，见 2.1
+ * 分词匹配（match）用的字段名：textable 取 .text 子字段，termsize: 0 时主字段即 text
  */
-function termName(leaf: EsLeaf): string {
-  return leaf.kind === 'text' ? leaf.name + '.keyword' : leaf.name;
+function textName(leaf: EsLeaf): string {
+  return leaf.kind === 'text' ? leaf.name : leaf.name + '.text';
 }
 
 /**
  * and 语境发射：叶子条件按 nested path 链归组、由内向外逐层包裹为一个 nested 子句（同一 path
  * 的多个条件须合并且于同一元素满足，见 1.3），其余子句（ids / $or / $not 等）原样并列
  */
-function emitAnd(conds: Cond[]): Record<string, any>[] {
+function emitAnd(conds: EsCond[]): Record<string, any>[] {
   const out    : Record<string, any>[] = [];
   const groups = new Map<string, { chain: string[]; clauses: Record<string, any>[]; at: number }>();
 
