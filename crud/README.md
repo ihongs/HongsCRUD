@@ -2,13 +2,15 @@
 
 一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。各方法可供 json-rpc 和 mcp 调用，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理等。
 
+另含可选的 ES 检索组件 `Chaser`（从 `hongs-crud/search` 引入），把 `search` / `counts` 的查询执行搬到 Elasticsearch，并在写入后自动同步索引，见第 4 节。
+
 源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
 ```bash
 npm install hongs-crud
 ```
 
-> 依赖（peer）：mongoose `^7 || ^8`
+> 依赖（peer）：mongoose `^7 || ^8`；`@elastic/elasticsearch` `^8`（可选，仅使用 ES 检索组件时需要）
 
 ---
 
@@ -78,7 +80,7 @@ const userSchema = new Schema(
         value : '_id',                               // 取值字段名，默认 value
         title : 'name',                              // 显示字段名，默认 title
       },
-      options: {
+      extra: {
         opt: 'value',                                // → x-opt，公开扩展选项
       }
     }
@@ -107,7 +109,7 @@ mongoose 扩展：
 | `assign` | 字段内 | 写 `assign: false` 表示外部不可赋值，透出为 `readOnly` |
 | `countable` | 字段内 | 写 `countable: true` 表示该字段可被 `counts()` 统计，透出为 `x-countable` |
 | `reference` | 字段内 | 声明该字段的选项数据来源，透出为 `x-reference`；无 `method` 时取 `references[items]`，有 `method` 时远程调用 |
-| `options` | 字段内 | 任意附加信息，每个 key 加 `x-` 前缀后透出（如 `opt` → `x-opt`） |
+| `extra` | 字段内 | 任意附加信息，每个 key 加 `x-` 前缀后透出（如 `opt` → `x-opt`） |
 | `collection` | Schema 扩展 | **必填**，集合名 |
 | `softDelete` | Schema 扩展 | 伪删除配置；`true` 或 `{ isDeleted, deletedAt, deleted, default }`，启用后自动补字段，且 search / update / delete / counts 自动注入条件 |
 | `references` | Schema 扩展 | 引用数据表，字段通过 `reference.items` 引用，透出为 `x-references` |
@@ -136,7 +138,7 @@ mongoose 选项到 JSON Schema 的映射：
 | `immutable: true` | `x-immutable` |
 | `countable: true` | `x-countable` |
 | `reference: { items }` | `x-reference` |
-| `options: { opt: ... }` | `x-opt`（每个 key 加 `x-` 前缀） |
+| `extra: { opt: ... }` | `x-opt`（每个 key 加 `x-` 前缀） |
 
 然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `counts` / `upsert` / `schema` 能力。
 
@@ -234,7 +236,7 @@ mongoose 选项到 JSON Schema 的映射：
 
 `sels` 联动规则：
 
-- 任一非空数组转为 `$in` 并入总过滤条件，`count` 反映该条件下的总数。
+- 任一非空数组转为 `$in` 并入总过滤条件，`total` 反映该条件下的总数。
 - 已选字段不应用自己的 `sels` 条件（避免无法继续筛选该字段其他选项）。
 - 其他字段应用所有 `sels` 条件，结果相互联动。
 
@@ -345,7 +347,7 @@ mongoose 选项到 JSON Schema 的映射：
 - **标准关键字**：`type` / `title` / `description` / `default` / `format` / `pattern` / `minLength` / `maxLength` / `minimum` / `maximum` / `minItems` / `maxItems` / `minProperties` / `maxProperties` / `items` / `properties` / `additionalProperties` / `required` / `readOnly` / `writeOnly`，语义与 JSON Schema 一致。
 - **扩展关键字**：`x-immutable`（创建后不可改）、`x-countable`（可被 `counts()` 统计）、`x-reference`（引用数据来源）、`x-references`（引用数据列表，仅根节点）。
 - **`required` 只在 object 节点上**：根节点及子文档节点用 `required: string[]`，字段节点自身不带 `required`。
-- **`x-xxx`**：对应字段内的 `options`，所有 key 加上 'x-' 前缀。
+- **`x-xxx`**：对应字段内的 `extra`，所有 key 加上 'x-' 前缀。
 - 数组与子文档递归展开：`[String]` → `items: { type: 'string' }`，`[SubDocument]` → `items: { type: 'object', properties: {...} }`，`Map` → `additionalProperties: { ... }`。
 
 ---
@@ -449,6 +451,328 @@ enum CrudErrno {
   ALTER_REJECTED = -32009,   // 目标 id 不存在 / 非当前可变更的数据
 }
 ```
+
+---
+
+## 4. ES 检索组件（Chaser）
+
+`Chaser` 继承自 `Cradle`，在保留全部 CRUD 能力的基础上，把 `search` / `counts` 的查询执行搬到 Elasticsearch（全文检索、多条件过滤、聚合统计），并在写入后自动同步索引。适合数据量大、需要全文检索或复杂筛选联动的场景；mongo 始终是权威数据源，ES 只承担查询。
+
+### 4.1 引入与初始化
+
+从 subpath `hongs-crud/search` 引入，主入口 `hongs-crud` 不含 `search`：
+
+```ts
+import { Client } from '@elastic/elasticsearch';
+import { Chaser, setEsClient } from 'hongs-crud/search';  // 注意：从 subpath 引入
+
+const es = new Client({ node: 'http://127.0.0.1:9200' });
+
+// 方式一：构造时注入（第二参 model 沿用 Cradle，第三参为 es 客户端）
+const userCrud = new Chaser(userSchema, undefined, es);
+
+// 方式二：注册全局默认客户端，构造时可省略 es
+setEsClient(es);
+const userCrud = new Chaser(userSchema);
+```
+
+用不到检索的项目无需安装 `@elastic/elasticsearch`，且安装 / 类型检查 / 打包三环节均不受影响：
+
+| 环节 | 未装 ES 客户端且不用 `search` | 说明 |
+|---|---|---|
+| 安装 | 包管理器不告警 | ES 客户端在 peerDependencies 中标记为 optional |
+| 类型检查 | 不报错，无需 `skipLibCheck` | subpath 隔离，不 `import 'hongs-crud/search'` 就不会加载其类型声明 |
+| 打包 | 不报 `module not found`、无告警 | `search` 内对 ES 客户端只用 `import type`，产物零引用 |
+
+类与全局客户端（同步选项与统计见 4.5）：
+
+```ts
+export class Chaser extends Cradle {
+  constructor(schema: Schema, model?: Model<any>, es?: Client);
+
+  getClient(): Client;                   // 未注入则取全局默认，缺失抛 CrudErrno.INTERNEL_ERROR
+  getIndex (): string;                   // esIndex || collection
+
+  /* ---------- mapping 与字段清单 ---------- */
+  getMapping(): Record<string, any>;     // 入索引字段 -> ES mapping，含合并字段
+  getSyncable(): Set<string>;            // 入索引字段名集合（含子文档点号路径）
+  getTextable(): Set<string>;            // 参与全文的文本字段名集合
+  getCountable(): Set<string>;           // 入索引 + countable 字段名集合
+  getNestedPaths(): Set<string>;         // 声明了 nested 的字段路径集合
+
+  /** 拼装全文内容，写入 esFullText 字段；默认按 getTextable() 取值拼接，子类可覆盖 */
+  protected getFullText(doc: any): string;
+
+  /* ---------- 覆盖：读走 ES ---------- */
+  search(params: SearchParams, ctx: Context): Promise<SearchResult>;
+  counts(params: CountsParams, ctx: Context): Promise<CountsResult>;
+
+  /* ---------- 直查 mongo：透传 Cradle 原实现，绕过 ES，供兜底或比对用 ---------- */
+  rawSearch(params: SearchParams, ctx: Context): SearchResult;
+  rawCounts(params: CountsParams, ctx: Context): CountsResult;
+
+  /* ---------- 覆盖：写后同步（esAutoSync，见 4.5） ---------- */
+  add   (data: Record<string, any>): [ any, string ];
+  set   (id : string, data: Record<string, any>): [ any, number ];
+  putAll(ids: string[], data: Record<string, any>): number;
+  delAll(ids: string[], data?: Record<string, any>): number;
+
+  /* ---------- 索引与同步（见 4.5 / 4.6） ---------- */
+  makeIndex(): Promise<void>;
+  initIndex(): Promise<void>;
+  dropIndex(): Promise<void>;
+  pushMapping(): Promise<string[]>;
+  syncDocs(docs: any[], opts?: SyncOpts): Promise<SyncStat>;
+  syncDels(ids: string[], opts?: SyncOpts): Promise<SyncStat>;
+  syncFind(find?: Record<string, any>, opts?: SyncFindOpts): Promise<SyncStat>;
+  syncPurge(opts: SyncPurgeOpts): Promise<SyncStat>;
+}
+
+/** 注册 / 读取全局默认 ES 客户端 */
+export function setEsClient(client: Client): void;
+export function getEsClient(): Client | undefined;
+```
+
+构造方法只在 `Cradle` 的 `model` 之后加一个 `es`，其余可调项（索引名、合并字段名、分词器、是否自动同步等）一律放在 Schema 扩展选项里，见下节。
+
+### 4.2 Schema 扩展选项
+
+```ts
+const userSchema = new Schema({
+  username: { type: String },
+  intro   : { type: String, analyzer: 'ik_smart' },          // 可选，字段级分词器，覆盖 esAnalyzer
+  remark  : { type: String, canText: false },                // 进 ES 可单独精确查，但不并入全文
+  notes   : { type: String, canSync: false },                // 不进 ES，find / wd / sort 均不可用
+  passwd  : { type: String, select: false, canSync: false }, // select 只管显示，不入索引须显式关闭
+  works   : { type: [workSchema], nested: true },            // 数组子文档，声明 nested 才保留元素关联
+}, {
+  collection : 'users',
+  timestamps : true,
+  esIndex    : 'crud_users',   // 可选，索引名，默认取 collection
+  esFullText : 'fullText',     // 可选，合并搜索字段名，默认 fullText
+  esSyntTime : 'syntTime',     // 可选，同步戳字段名，默认 syntTime
+  esAnalyzer : 'ik_max_word',  // 可选，text 字段的默认分词器，默认不设（用 ES 的 standard）
+  esAutoSync : true,           // 可选，写入后是否自动同步 ES，默认 true
+  esSyncError: console.error,  // 可选，同步失败回调 (err, info) => void
+});
+```
+
+Schema 扩展选项：
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| `esIndex` | `collection` | ES 索引名 |
+| `esFullText` | `'fullText'` | 合并搜索字段名，`wd` 的查询目标 |
+| `esSyntTime` | `'syntTime'` | 同步戳字段名，每次写入 ES 时置为当前时间，见 4.5 |
+| `esAnalyzer` | 无（ES 的 `standard`） | 索引内所有 `text` 字段（含合并字段）的默认分词器，可被字段级 `analyzer` 覆盖 |
+| `esAutoSync` | `true` | 写入（`add` / `set` / `putAll` / `delAll`）后是否自动同步 ES；`false` 则完全交给定时 `syncFind` |
+| `esSyncError` | `console.error` | 同步失败回调 `(err, info) => void` |
+
+字段扩展项：
+
+| 扩展项 | 默认 | 说明 |
+|---|---|---|
+| `canSync` | `true` | 是否纳入 ES 索引；`false` 则该字段（容器字段则整棵子树）不进 ES，`find` / `wd` / `sort` 引用时抛 `CrudErrno.PARAMS_INVALID`，但不影响返回（文档一律回 mongo 取） |
+| `canText` | `true` | 是否并入全文合并字段；`false` 仍进索引、仍可单独 `find` / `sort`，供备注、日志这类长文本使用 |
+| `nested` | `false` | 数组子文档标 `nested: true` 才映射为 ES `nested`（保留元素关联），默认按扁平模式，见 4.4 |
+| `analyzer` | 无 | 字段级分词器，覆盖 Schema 级 `esAnalyzer`；只对映射为 `text` 的字段有效，标在非 `text` 字段上视为配置矛盾，构造时抛 `CrudErrno.INTERNEL_ERROR` |
+
+规则：
+
+- **默认全同步**：Schema 中所有可映射字段一律纳入索引，仅 `canSync: false` 与不可映射类型（如 `Map`）不进。
+- `select: false` 的字段**默认照常同步**：`select` 只管「能否显示」，不管「能否查询」；同步进 ES 后可查、可排序，但不会出现在返回中（`cols` 显式指定时可取出）。确实不该入索引的（如密码）显式加 `canSync: false`。
+- `countable: true` 仍单独决定可否被 `counts()` 统计，但字段须先在索引内；与 `canSync: false` 并用视为配置矛盾，构造时抛 `CrudErrno.INTERNEL_ERROR`。
+- 启用 `softDelete` 时，`isDeleted` / `deletedAt` 不入索引（ES 只留有效文档，见 4.4 / 4.5）；`timestamps` 的 `createdAt` / `updatedAt` 自动入索引，可直接排序与范围过滤。
+- **`esFullText` / `esSyntTime` 是组件内部字段**，分别承担全文检索与同步水位，不可在 `find` / `sort` / `counts` 中引用（引用时同不可映射字段一样抛 `PARAMS_INVALID`）；与业务字段撞名时改 Schema 选项避开即可。
+
+分词器：
+
+- 两级配置、就近覆盖：Schema 选项 `esAnalyzer` 定索引默认，字段扩展项 `analyzer` 就近覆盖，都不设则不写 `analyzer`，由 ES 用 `standard`（中文按字切分，可满足基本包含式检索）。
+- 组件不负责安装分词插件：配了 ES 未安装的分词器，建索引时由 ES 直接报错。
+- `wd` 的分词只由合并字段（取 `esAnalyzer`）决定：`getFullText()` 拼进去的是原始文本，源字段各自的 `analyzer` 不影响 `wd`。
+- **改分词器要重建索引**：已建索引的字段换 `analyzer` 会被 ES 拒绝，只能 `initIndex()` + `syncFind()`，见 4.6。
+
+### 4.3 类型映射与全文检索
+
+mongoose 到 ES mapping 的类型推导：
+
+| Mongoose | ES mapping |
+|---|---|
+| `String` | `text`（附 `keyword` 子字段，`ignore_above: 256`，供精确匹配与排序） |
+| `String` + `enum` | `keyword`（枚举值不做分词） |
+| `Number` / `Schema.Types.Decimal128` | `double` |
+| `Boolean` | `boolean` |
+| `Date` | `date` |
+| `Schema.Types.ObjectId` | `keyword` |
+| `[X]` | 按元素类型推导（ES 数组与标量同 mapping） |
+| 子文档（非数组） | `object`，递归推导 |
+| `[SubSchema]` | 默认 `object` 扁平；标 `nested: true` 则 `nested` |
+| `Map` | 不支持，一律跳过（键不可枚举，无法预生成 mapping），无需标 `canSync: false` |
+
+- mapping 根级与所有 `object` / `nested` 容器一律 `dynamic: 'strict'`：未在 mapping 中声明的字段写入 ES 直接报错。`syncDocs` 按 mapping 裁剪字段，正常路径不会触发，它是防止 mapping 与代码脱节的安全网。
+- 索引惰性建立：首次查询或同步前经 `makeIndex()` 检查索引是否存在（结果内存缓存），不存在则按 `getMapping()` 创建；已存在则不改动、不校验，避免误改线上索引。
+
+合并字段（全文字段）与 `getFullText(doc)`：
+
+```ts
+/** 拼装全文内容，写入 esFullText 字段；子类可覆盖以追加标签等派生文本 */
+protected getFullText(doc: any): string;
+```
+
+- `wd` 只查合并字段（默认 `fullText`）这一处，不做 `multi_match`；mapping 中显式定义它为 `{ type: 'text' }`，且 `_source` 排除该字段（倒排照建、能搜，但不占存储）。
+- 默认实现按文本字段清单（`getTextable()`，即入索引的 `text` 字段再排除 `canText: false`）逐个取值，扁平化数组、去空、去重后 `join(' ')`，效果与 `copy_to` 等价，但**不用 ES 的 `copy_to`**。
+- 子类覆盖以追加码值标签、关联名称等派生文本（`copy_to` 只能拷字段原始值，`status: 1` 拷进去就是 `"1"`，搜不到「已发布」，这条路必须自行拼装）：
+
+```ts
+class UserChaser extends Chaser {
+  protected getFullText(doc: any): string {
+    return [
+      super.getFullText(doc),            // 默认的文本字段拼接
+      USER_STATUS[doc.status] || '',     // 码值 -> 标签，如 1 -> '已发布'
+      doc.orgName || '',                 // 关联名称等派生文本
+    ].filter(Boolean).join(' ');
+  }
+}
+```
+
+- 改 `getFullText` 的实现或某字段的 `canText` 不涉及 mapping，**只需 `syncFind()` 重写一遍数据**即生效，无需重建索引。
+
+### 4.4 查询行为
+
+`find` 保持 mongo 风格，内部翻译为 ES DSL，全部进 `filter` 上下文（不参与打分）；支持 `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$nin` / `$regex` / `$exists` / `$and` / `$or` / `$not` 与字段等值（含 `null`），不认识的写法抛 `CrudErrno.PARAMS_INVALID`。其余约定：
+
+- **只有 `id` 没有 `wd` / `find` 的请求直查 mongo**（内部走 `rawSearch`）：纯取详情无过滤无打分，ES 帮不上忙还多一趟回表；软删除过滤等语义与 mongo 版完全一致。
+- **返回文档一律来自 mongo**：ES 查询只取 `_id` 与 `_score`，命中 id 回 mongo 取完整文档并按 ES 顺序重排，返回结构与 `Cradle.search` 完全一致；`cols` 交 mongo 处理，沿用 `Cradle` 的投影与 `select: false` 规则。条件、排序、分页、计数一概仍由 ES 完成。
+- ES 命中但 mongo 已无（索引滞后 / 已硬删）的 id 直接跳过，不补位。
+- `wd` 非空时追加 `match` 到合并字段参与打分，并把 `_score` 并入结果；`wd` 为空则整个查询不计分。
+- 排序、分页（`start` / `limit`）、四种 `mode` 模式与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
+- **扁平模式的限制**：数组子文档未标 `nested: true` 时按 `object` 扁平索引，元素间的关联会丢失，跨字段的联合条件不保证落在同一元素。如 `find: { 'works.tag': 'a', 'works.qty': 9 }` 在扁平模式下会误命中「tag=a 与 qty=9 分属两个元素」的文档；要求同一元素同时满足时给该字段标 `nested: true`。
+- `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`counts` 统计自动内嵌 `reverse_nested` 回到父文档计数。
+- 不加软删除条件：ES 里只有有效文档；「已伪删但 ES 尚未同步」的滞后命中由回 mongo 查询的软删除条件自然过滤（等同跳过）。
+
+**自定义排序**：`getSort` 为 `protected`，负责把外部 `sort` 翻译为 ES sort 数组（数组序即多级排序优先级），重写它可接入脚本排序。如约定虚拟字段 `vFieldx` 表示按 `field1 * 0.8 + field2 * 0.5` 加权排序：
+
+```ts
+class MyChaser extends Chaser {
+  protected getSort(sort: Record<string, 1 | -1>): Record<string, any>[] {
+    const out: Record<string, any>[] = [];
+    for (const [field, dir] of Object.entries(sort)) {  // 按传入顺序落位，虚拟字段在中间就落中间
+      if (field === 'vFieldx') {
+        out.push({ _script: {
+          type  : 'number',
+          script: {
+            // doc values 缺值须兜底，否则 painless 直接抛错
+            source: `(doc['field1'].size() > 0 ? doc['field1'].value : 0) * 0.8`
+               + ` + (doc['field2'].size() > 0 ? doc['field2'].value : 0) * 0.5`,
+          },
+          order  : dir === -1 ? 'desc' : 'asc',
+          missing: '_last',
+        } });
+      } else {
+        out.push(...super.getSort({ [field]: dir }));    // 逐字段复用原翻译与校验
+      }
+    }
+    if (out.length) out.push({ _doc: 'asc' });           // 并列兜底，保证分页翻页稳定
+    return out;
+  }
+}
+```
+
+- 调用侧无感：`search({ sort: { vFieldx: -1 } })`，可与真实字段混用，优先级即传入顺序。
+- 脚本引用的字段必须已入索引（`canSync` 非 false 且有 doc values）；虚拟字段名被剥离，不参与 `_leaves` 校验。
+- `_script` 逐文档计算、无法利用索引序，数据量大时建议物化：重写 `esDoc()` 算好加权值存成真实字段（mapping 同步声明），`getSort` 走普通排序。传了 `sort` 即不再按 `_score` 排，但 `_score` 仍并入返回文档。
+
+### 4.5 同步
+
+写入自动同步（`esAutoSync` 默认 `true`）：
+
+- `add` / `set` / `putAll` / `delAll` 在 mongo 写入成功后同步 ES；`setAll` / `create` / `update` / `upsert` 内部落到这些方法，自动获得同步。
+- **删除无视 `softDelete`**：ES 侧一律物理删除，索引中只保留有效文档。
+- ES 同步失败**不回滚、不影响写方法的返回值**（mongo 是权威数据源），仅按 Schema 选项 `esSyncError` 告警。
+- `esAutoSync: false` 时写入不触 ES，改由定时 `syncFind` 分批补齐；建议配合 `softDelete` 使用——未启用 `softDelete` 时硬删的记录定时任务无从发现，只能靠低频的全量 `syncFind()` 兜底。
+
+手动与定时同步：
+
+```ts
+// 直接同步文档（数组），唯一的 ES 写入出口；伪删文档自动转为删除动作
+await userCrud.syncDocs([ doc1, doc2 ], { refresh: 'wait_for' });
+
+// 按 id 批量删除
+await userCrud.syncDels([ '66b...a01', '66b...a02' ]);
+
+// 只同步某机构下的数据
+await userCrud.syncFind({ orgId: '66b...a01' });
+
+// 每天同步「最近 25 小时」的变更，相邻两天有 1 小时重叠，消除时间误差与临界遗漏
+await userCrud.syncFind({ updatedAt: { $gte: new Date(Date.now() - 25 * 3600e3) } });
+
+// 全量刷新：扫 mongo 全量覆盖 ES，收尾按同步戳水位清掉孤立记录，无空窗
+await userCrud.syncFind();
+
+// 只清理不刷新（明确知道水位时；since 必传，且须早于最近一次全量同步的开始时间）
+await userCrud.syncPurge({ since: lastSyncStartAt });
+
+// 索引管理：makeIndex 确保存在（幂等，已存在不动）、initIndex 删后重建（改类型 / 分词用，有空窗）、
+// dropIndex 删索引、pushMapping 增量推送 mapping
+await userCrud.makeIndex();
+await userCrud.initIndex();
+await userCrud.dropIndex();
+await userCrud.pushMapping();
+```
+
+同步选项与返回：
+
+```ts
+interface SyncOpts {                       // 同步公共选项
+  refresh?: boolean | 'wait_for';          // 默认 false；写后即读传 'wait_for'
+}
+interface SyncFindOpts extends SyncOpts {
+  batch?: number;                          // 每批文档数，默认 1000
+  purge?: boolean;                         // 仅全量（不传 find）时有效，默认 true
+}
+interface SyncPurgeOpts extends SyncOpts {
+  since : Date;                            // 水位，删除同步戳早于此时间的文档，必传
+}
+interface SyncStat {
+  total  : number;                         // 扫描到的文档数
+  indexed: number;                         // 成功写入数
+  deleted: number;                         // 删除数
+  failed : number;                         // 失败数
+  errors : any[];                          // 失败明细（截断保留前 N 条）
+}
+```
+
+同步规则：
+
+- 查询同步用 mongo 游标逐个取、攒批（每批 `batch` 条）一次 bulk 提交，文档量大时内存可控；重复同步幂等（`index` 按 `_id` 整体覆盖，`delete` 对不存在的 id 不报错），重叠区间安全。
+- 全量 `syncFind()` 先记水位 T，扫完全量后补一次 `syncPurge({ since: T })`，把「ES 里有、mongo 里已无」的孤立记录清掉，一趟完成补齐与清理且无空窗（不需要先清空索引）；失败数不为 0 时跳过收尾清理，以免误删同步失败的文档。
+- 单独调 `syncPurge` 必须传 `since`，且该时刻要早于最近一次覆盖全量的同步的开始时间，否则会删掉正常数据；不提供默认值就是为了避免误用。
+- 增量同步依赖 `timestamps` 的 `updatedAt` 做水位，条件由调用方自行拼；Schema 未启用 `timestamps` 时只能全量。
+- 全量 `syncFind()` 成本远高于增量（扫 mongo 全量并重写整个索引），百万级可每天跑、千万级建议低峰期每天一次、亿级建议每周或按段切分；不要与增量同步混在一个定时任务里。
+- 不引入队列与重试机制：失败明细记入 `SyncStat.errors`，由下一次定时 `syncFind` 自然补偿。
+
+### 4.6 Schema 变更后的索引维护
+
+ES 的硬约束决定了各类变更不能一概而论：
+
+| 变更 | 处理方式 |
+|---|---|
+| 新增字段 | `pushMapping()` + `syncFind()` 回填，无空窗 |
+| 删除字段（或改标 `canSync: false`） | 只需 `syncFind()` 覆盖旧值；mapping 定义删不掉但留着无害 |
+| 改全文内容（`getFullText` 实现、`canText`） | 只需 `syncFind()` 重写一遍数据 |
+| 改已有字段类型 / 分词 | 只能 `initIndex()` + `syncFind()` 重建（有空窗） |
+
+标准操作序列（全程无空窗、可重复执行、中断重跑即可）：
+
+```ts
+// 1. 推增量 mapping：与索引现有 mapping 做 diff，只补新增字段，不动既有定义
+await userCrud.pushMapping();
+
+// 2. 全量刷新：既回填新字段，又覆盖掉已删字段的旧值，同时清掉孤立记录
+await userCrud.syncFind();
+```
+
+> 注意：已存在的索引不会被 `Chaser` 自动改动，改过 Schema 后必须显式走上述流程，否则新字段查不到且没有任何报错。`pushMapping()` 必须由本方法推送而非手写 mapping：`keyword` 子字段、nested 结构、`dynamic: 'strict'` 等推导规则都在 `getMapping()` 里，手写极易与索引内的既有定义不一致。
 
 ---
 

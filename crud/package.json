@@ -5,7 +5,21 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./search": {
+      "types": "./dist/search/index.d.ts",
+      "default": "./dist/search/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "search": [
+        "dist/search/index.d.ts"
+      ]
+    }
   },
   "files": [
     "dist"
@@ -14,13 +28,21 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "test:crud": "tsc -p tsconfig.test.json && node dist-test/test/crud.js",
-    "test:counts": "tsc -p tsconfig.test.json && node dist-test/test/counts.js"
+    "test:counts": "tsc -p tsconfig.test.json && node dist-test/test/counts.js",
+    "test:chaser": "tsc -p tsconfig.test.json && node dist-test/test/chaser.js"
   },
   "peerDependencies": {
-    "mongoose": "^7.0.0 || ^8.0.0"
+    "mongoose": "^7.0.0 || ^8.0.0",
+    "@elastic/elasticsearch": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@elastic/elasticsearch": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "mongoose": "^8.0.0",
+    "@elastic/elasticsearch": "^8.0.0",
     "typescript": "^5.0.0",
     "@types/node": "^20.0.0"
   },
