@@ -9,11 +9,14 @@
 
 import type { Schema, Model } from 'mongoose';
 import type { Client } from '@elastic/elasticsearch';
-import type { SyncOpts, SyncFindOpts, SyncPurgeOpts, SyncStat } from './types';
+import type { SyncOpts, SyncFindOpts, SyncPurgeOpts, SyncStat, EsOpts, EsLeaf } from './types';
 import type { FindSpec, SortSpec, ColsSpec, SearchParams, SearchResult, CountsParams, CountsResult, Context } from '../types';
 import { Cradle, CrudError, CrudErrno } from '../index';
 
 export * from './types';
+
+/** terms 聚合 size 上限约定值（ES search.max_buckets 默认），top 为 0（不限）时取它，见 4 节 */
+const TERMS_MAX = 65536;
 
 /* ---------- Chaser ---------- */
 
@@ -129,6 +132,14 @@ export class Chaser extends Cradle {
   /** select: false 且可同步的字段，普通查询默认是拿不到的 */
   getSelectFalse(): Set<string> {
     return this._selectFalse;
+  }
+
+  /**
+   * 获取字段叶子节点
+   * 用于查询条件翻译
+   */
+  protected getLeaf(name: string): EsLeaf | undefined {
+    return this._leaves.get(name);
   }
 
   /**
@@ -280,51 +291,66 @@ export class Chaser extends Cradle {
     return conds;
   }
 
-  /** 单个字段条件 -> ES 子句（对照表见 2.1）；未入索引的字段与不支持的操作符抛 PARAMS_INVALID */
-  private fieldConds(field: string, val: any, out: Cond[]): void {
+  /**
+   * 翻译单个字段条件，转为 ES 子句
+   * 自定义的字段条件可覆盖重写此方法
+   * 未入索引的字段与不支持的操作符抛 PARAMS_INVALID
+   */
+  protected fieldConds(field: string, value: any, out: Cond[]): void {
     const leaf = this._leaves.get(field);
-    if (!leaf) {
+    if (! leaf) {
       throw new CrudError(
         `Field "${field}" is not in the ES index (canSync: false or unmappable type).`,
         CrudErrno.PARAMS_INVALID,
         { field },
       );
     }
-    const chain = this.nestedChain(field);
-    const push  = (clause: Record<string, any>): void => { out.push({ clause, chain }); };
 
-    // null 与缺失在 ES 里同义（exists 均为假），must_not + exists
-    if (val === null || val === undefined) {
-      push({ bool: { must_not: [{ exists: { field } }] } });
-      return;
-    }
-
-    // 数组整体精确匹配没有 ES 等价写法（数组包含语义走 $in）
-    if (Array.isArray(val)) {
+    if (Array.isArray(value)) {
       throw new CrudError(
-        `Array value on "${field}" has no ES equivalent, use "$in" instead.`,
+        `Array value on "${field}" is not supported, please use "$in" instead.`,
         CrudErrno.PARAMS_INVALID,
         { field },
       );
     }
 
-    if (val instanceof Date || typeof val !== 'object') {
-      push({ term: { [termName(leaf)]: val } });
-      return;
-    }
-
-    // 纯对象：逐个 $ 操作符（mongo 允许一对象多算子，隐式 and）
-    if (!Object.keys(val).length) {
+    if (isEmptyObj(value)) {
       throw new CrudError(
         `Condition of "${field}" is empty.`,
         CrudErrno.PARAMS_INVALID,
         { field, operator: '' },
       );
     }
-    for (const [op, ov] of Object.entries(val)) {
+
+    const chain = this.nestedChain(field);
+    const push  = (clause: Record<string, any>): void => { out.push({ clause, chain }); };
+
+    // null 与缺失在 ES 里同义（exists 均为假），must_not + exists
+    if (value === null || value === undefined) {
+      push({ bool: { must_not: [{ exists: { field } }] } });
+      return;
+    }
+
+    if (value instanceof Date || typeof value !== 'object') {
+      push({ term: { [termName(leaf)]: value } });
+      return;
+    }
+
+    for (const [op, ov] of Object.entries(value)) {
       switch (op) {
-        case '$eq':   // 与直接传值同一翻译（含 null 与 Date）
-          this.fieldConds(field, ov, out);
+        case '$gt': case '$gte': case '$lt': case '$lte':
+          push({ range: { [termName(leaf)]: { [op.slice(1)]: ov } } });
+          break;
+        case '$exists':
+          push(ov === false
+            ? { bool: { must_not: [{ exists: { field } }] } }
+            : { exists: { field } });
+          break;
+        case '$eq':
+          // mongo 语义：$eq null 即「字段无值」
+          push(ov === null || ov === undefined
+            ? { bool: { must_not: [{ exists: { field } }] } }
+            : { term: { [termName(leaf)]: ov } });
           break;
         case '$ne':
           // mongo 语义：$ne null 即「字段有值」
@@ -332,10 +358,7 @@ export class Chaser extends Cradle {
             ? { exists: { field } }
             : { bool: { must_not: [{ term: { [termName(leaf)]: ov } }] } });
           break;
-        case '$gt': case '$gte': case '$lt': case '$lte':
-          push({ range: { [termName(leaf)]: { [op.slice(1)]: ov } } });
-          break;
-        case '$in': case '$nin': {
+        case '$in': {
           if (!Array.isArray(ov)) {
             throw new CrudError(
               `"${op}" expects an array on "${field}".`,
@@ -343,8 +366,18 @@ export class Chaser extends Cradle {
               { field, operator: op },
             );
           }
-          const terms = { terms: { [termName(leaf)]: ov } };
-          push(op === '$in' ? terms : { bool: { must_not: [terms] } });
+          push({ terms: { [termName(leaf)]: ov } });
+          break;
+        }
+        case '$nin': {
+          if (!Array.isArray(ov)) {
+            throw new CrudError(
+              `"${op}" expects an array on "${field}".`,
+              CrudErrno.PARAMS_INVALID,
+              { field, operator: op },
+            );
+          }
+          push({ bool: { must_not: [{ terms: { [termName(leaf)]: ov } }] } });
           break;
         }
         case '$regex': {
@@ -359,11 +392,19 @@ export class Chaser extends Cradle {
           push({ regexp: { [termName(leaf)]: re } });
           break;
         }
-        case '$exists':
-          push(ov === false
-            ? { bool: { must_not: [{ exists: { field } }] } }
-            : { exists: { field } });
+        case '$search': {
+          // 对齐 mongo 的 $text.$search：字段级分词匹配（mongo 社区版无此能力，Chaser 独有）；
+          // match 打主字段而非 .keyword（keyword 不分词），operator: and 须全部分词命中
+          if (leaf.kind !== 'text' || typeof ov !== 'string' || !ov.trim()) {
+            throw new CrudError(
+              `"$search" on "${field}" expects a non-empty string on text fields.`,
+              CrudErrno.PARAMS_INVALID,
+              { field, operator: op },
+            );
+          }
+          push({ match: { [field]: { query: ov, operator: 'and' } } });
           break;
+        }
         default:
           throw new CrudError(
             `Operator "${op}" on "${field}" is not supported in ES translation.`,
@@ -375,8 +416,8 @@ export class Chaser extends Cradle {
   }
 
   /** 字段所属的 nested path 链（由外到内，内层为全路径），不在 nested 下为空数组 */
-  private nestedChain(field: string): string[] {
-    const segs  = field.split('.');
+  private nestedChain(fn: string): string[] {
+    const segs  = fn.split('.');
     const chain: string[] = [];
     for (let i = 1; i < segs.length; i ++) {
       const p = segs.slice(0, i).join('.');
@@ -663,6 +704,16 @@ export class Chaser extends Cradle {
     return this._esOpts.esAutoSync;
   }
 
+  /** 按 id 从 ES bulk delete，无视 softDelete（ES 侧一律物理删除，只留有效文档），见 5.1 */
+  async syncDels(ids: string[], opts?: SyncOpts): Promise<SyncStat> {
+    if (!ids.length) {
+      return { total: 0, indexed: 0, deleted: 0, failed: 0, errors: [] };
+    }
+    const index = this.getIndex();
+    const operations = ids.map(id => ({ delete: { _index: index, _id: String(id) } }));
+    return this.runBulk(operations, ids.map(String), opts);
+  }
+
   /**
    * 文档 -> ES bulk（见 5.2）：逐个按 mapping 取入索引字段、拼装合并字段（getFullText）、
    * 同步戳置为当前时间；删除标记为真的转为 delete 动作，与 index 拼进同一个 bulk
@@ -673,6 +724,7 @@ export class Chaser extends Cradle {
     }
 
     const sd    = this.getSoftDelete();
+    const df    = sd !== undefined ? (sd.isDeleted || 'isDeleted') : '-';
     const de    = sd !== undefined ? (sd.deleted !== undefined ? sd.deleted : true) : undefined;
     const index = this.getIndex();
 
@@ -682,7 +734,7 @@ export class Chaser extends Cradle {
       const id = String(doc._id);
       ids.push(id);
       // 删除标记为真的转为 delete 动作（标记字段本身不入索引，只在此分流），见 5.1
-      if (sd && getDocPath(doc, sd.isDeleted || 'isDeleted') === de) {
+      if (sd && getDocPath(doc, df) === de) {
         operations.push({ delete: { _index: index, _id: id } });
         continue;
       }
@@ -690,16 +742,6 @@ export class Chaser extends Cradle {
       operations.push(this.esDoc(doc));
     }
     return this.runBulk(operations, ids, opts);
-  }
-
-  /** 按 id 从 ES bulk delete，无视 softDelete（ES 侧一律物理删除，只留有效文档），见 5.1 */
-  async syncDels(ids: string[], opts?: SyncOpts): Promise<SyncStat> {
-    if (!ids.length) {
-      return { total: 0, indexed: 0, deleted: 0, failed: 0, errors: [] };
-    }
-    const index = this.getIndex();
-    const operations = ids.map(id => ({ delete: { _index: index, _id: String(id) } }));
-    return this.runBulk(operations, ids.map(String), opts);
   }
 
   /** 提交 bulk 并逐项结算 SyncStat：失败的计入 errors（截断前 20 条）并按 esSyncError 告警 */
@@ -889,25 +931,6 @@ export function getEsClient(): Client | undefined {
 
 /* ---------- Helpers：mapping 推导 ---------- */
 
-/** Schema 扩展选项的规范化形式（默认值已填，见 1.1） */
-interface EsOpts {
-  esIndex    : string;
-  esFullText : string;
-  esSyntTime : string;
-  esAnalyzer?: string;
-  esAutoSync : boolean;
-  esSyncError: (err: any, info: Record<string, any>) => void;
-}
-
-/** 叶子字段的推导结果：ES 类型、分词器与清单归属 */
-interface EsLeaf {
-  name     : string;                          // 完整点号路径
-  kind     : 'text' | 'keyword' | 'double' | 'boolean' | 'date';
-  analyzer?: string;                          // 字段级 analyzer > Schema 级 esAnalyzer，仅 text 有效
-  textable : boolean;                         // kind = text 且未标 canText: false
-  countable: boolean;                         // 字段定义项标了 countable: true
-}
-
 /**
  * 单个叶子字段的 ES 类型推导
  * opts 为字段定义项（数组取数组定义项），instance 为本体 / 数组元素的 mongoose 类型名
@@ -925,9 +948,9 @@ function deriveLeaf(
     case 'ObjectId'  :
     case 'ObjectID'  : kind = 'keyword'; break;
     case 'Number'    :
-    case 'Decimal128': kind = 'double'; break;
+    case 'Decimal128': kind = 'double' ; break;
     case 'Boolean'   : kind = 'boolean'; break;
-    case 'Date'      : kind = 'date'; break;
+    case 'Date'      : kind = 'date'   ; break;
     default          : return undefined;
   }
   if (opts.analyzer && kind !== 'text') {
@@ -940,7 +963,8 @@ function deriveLeaf(
   return {
     name,
     kind,
-    analyzer: kind === 'text' ? (opts.analyzer || esAnalyzer) : undefined,
+    analyzer : kind === 'text' ? (opts.analyzer || esAnalyzer) : undefined,
+    textsize : kind === 'text' ?  opts.cutText  :  undefined,
     textable : kind === 'text' && opts.canText !== false,
     countable: opts.countable === true,
   };
@@ -949,12 +973,22 @@ function deriveLeaf(
 /** 叶子字段的 ES mapping（对照表见 1.2） */
 function leafMapping(leaf: EsLeaf): Record<string, any> {
   switch (leaf.kind) {
-    case 'text':
-      return {
-        type: 'text',
-        ...(leaf.analyzer ? { analyzer: leaf.analyzer } : {}),
-        fields: { keyword: { type: 'keyword', ignore_above: 256 } },
-      };
+    case 'text': {
+      // keyword 子字段（term 视角）供等值 / 排序 / 聚合；textsize 控制其截断阈值（见 1.1）：
+      // 默认 256（超过 ignore_above 的长串不进 keyword，等值匹配本就不可靠）；
+      // 0 不声明子字段（只搜不精确匹配，省索引）；-1 不限（不设 ignore_above）
+      const rst = { type: 'text' } as any;
+      const cut = leaf.textsize ?? 256;
+      if (leaf.analyzer) rst.analyzer = leaf.analyzer;
+      if (cut) {
+        if (cut > 0) {
+          rst.fields = { keyword: { type: 'keyword', ignore_above: cut } };
+        } else {
+          rst.fields = { keyword: { type: 'keyword' } };
+        }
+      }
+      return rst;
+    }
     case 'keyword': return { type: 'keyword' };
     case 'double' : return { type: 'double' };
     case 'boolean': return { type: 'boolean' };
@@ -1175,9 +1209,6 @@ function termName(leaf: EsLeaf): string {
   return leaf.kind === 'text' ? leaf.name + '.keyword' : leaf.name;
 }
 
-/** terms 聚合 size 上限约定值（ES search.max_buckets 默认），top 为 0（不限）时取它，见 4 节 */
-const TERMS_MAX = 65536;
-
 /**
  * and 语境发射：叶子条件按 nested path 链归组、由内向外逐层包裹为一个 nested 子句（同一 path
  * 的多个条件须合并且于同一元素满足，见 1.3），其余子句（ids / $or / $not 等）原样并列
@@ -1209,7 +1240,12 @@ function emitAnd(conds: Cond[]): Record<string, any>[] {
   return out;
 }
 
-/** 是否普通对象（排除 null / 数组 / Date） */
+/** 是否普通对象（排除 null / Date / 数组） */
 function isPlainObj(v: any): boolean {
-  return !!v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date);
+  return v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date);
+}
+
+/** 是否空的对象（排除 null / Date / 数组）（即无键值对） */
+function isEmptyObj(v: any): boolean {
+  return isPlainObj(v) && Object.keys(v).length === 0;
 }

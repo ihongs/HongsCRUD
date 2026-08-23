@@ -55,4 +55,26 @@ export interface EsFieldOpts {
   nested?: boolean;
   /** 字段级分词器，覆盖 Schema 级 esAnalyzer，只对映射为 text 的字段有效 */
   analyzer?: string;
+  /** text 的 keyword 子字段截断阈值：默认 256；0 不声明子字段（只搜不精确匹配，等值 / 排序 / 聚合不可用）；-1 不限 */
+  cutText?: number;
+}
+
+/** Schema 扩展选项的规范化形式（默认值已填，见 1.1） */
+export interface EsOpts {
+  esIndex    : string;
+  esFullText : string;
+  esSyntTime : string;
+  esAnalyzer?: string;
+  esAutoSync : boolean;
+  esSyncError: (err: any, info: Record<string, any>) => void;
+}
+
+/** 叶子字段的推导结果：ES 类型、分词器与清单归属 */
+export interface EsLeaf {
+  name     : string;                          // 完整点号路径
+  kind     : 'text' | 'keyword' | 'double' | 'boolean' | 'date';
+  analyzer?: string;                          // 字段级 analyzer > Schema 级 esAnalyzer，仅 text 有效
+  textsize?: number;                          // text 的 keyword 子字段截断阈值，见 leafMapping
+  textable : boolean;                         // kind = text 且未标 canText: false
+  countable: boolean;                         // 字段定义项标了 countable: true
 }

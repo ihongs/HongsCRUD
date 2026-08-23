@@ -576,6 +576,7 @@ Schema 扩展选项：
 | `canText` | `true` | 是否并入全文合并字段；`false` 仍进索引、仍可单独 `find` / `sort`，供备注、日志这类长文本使用 |
 | `nested` | `false` | 数组子文档标 `nested: true` 才映射为 ES `nested`（保留元素关联），默认按扁平模式，见 4.4 |
 | `analyzer` | 无 | 字段级分词器，覆盖 Schema 级 `esAnalyzer`；只对映射为 `text` 的字段有效，标在非 `text` 字段上视为配置矛盾，构造时抛 `CrudErrno.INTERNEL_ERROR` |
+| `cutText` | `256` | `text` 的 keyword 子字段（term 视角，供等值 / 排序 / 聚合）截断阈值：超过 `ignore_above` 的长串不进 keyword，等值匹配本就不可靠；`0` 不声明子字段（只搜不精确匹配，省索引，等值 / 排序静默不命中不报错）；`-1` 不限长（超长串也能精确匹配）；改它需 `initIndex()` 重建 |
 
 规则：
 
@@ -598,7 +599,7 @@ mongoose 到 ES mapping 的类型推导：
 
 | Mongoose | ES mapping |
 |---|---|
-| `String` | `text`（附 `keyword` 子字段，`ignore_above: 256`，供精确匹配与排序） |
+| `String` | `text`（附 `keyword` 子字段，`ignore_above: 256`，供精确匹配与排序；阈值由字段级 `cutText` 调整，`0` 关闭、`-1` 不限） |
 | `String` + `enum` | `keyword`（枚举值不做分词） |
 | `Number` / `Schema.Types.Decimal128` | `double` |
 | `Boolean` | `boolean` |
@@ -639,12 +640,13 @@ class UserChaser extends Chaser {
 
 ### 4.4 查询行为
 
-`find` 保持 mongo 风格，内部翻译为 ES DSL，全部进 `filter` 上下文（不参与打分）；支持 `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$nin` / `$regex` / `$exists` / `$and` / `$or` / `$not` 与字段等值（含 `null`），不认识的写法抛 `CrudErrno.PARAMS_INVALID`。其余约定：
+`find` 保持 mongo 风格，内部翻译为 ES DSL，全部进 `filter` 上下文（不参与打分）；支持 `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$nin` / `$regex` / `$exists` / `$search` 与 `$and` / `$or` / `$not` 与字段等值（含 `null`），不认识的写法抛 `CrudErrno.PARAMS_INVALID`。其余约定：
 
 - **只有 `id` 没有 `wd` / `find` 的请求直查 mongo**（内部走 `rawSearch`）：纯取详情无过滤无打分，ES 帮不上忙还多一趟回表；软删除过滤等语义与 mongo 版完全一致。
 - **返回文档一律来自 mongo**：ES 查询只取 `_id` 与 `_score`，命中 id 回 mongo 取完整文档并按 ES 顺序重排，返回结构与 `Cradle.search` 完全一致；`cols` 交 mongo 处理，沿用 `Cradle` 的投影与 `select: false` 规则。条件、排序、分页、计数一概仍由 ES 完成。
 - ES 命中但 mongo 已无（索引滞后 / 已硬删）的 id 直接跳过，不补位。
 - `wd` 非空时追加 `match` 到合并字段参与打分，并把 `_score` 并入结果；`wd` 为空则整个查询不计分。
+- **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 text 字段可用，ES 侧翻译为 `match`（打主字段而非 `.keyword`），`operator: 'and'` 须全部分词命中；分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 要求 `body` 分词后 `hello` 与 `world` 同时命中；非 text 字段或空串抛 `PARAMS_INVALID`。
 - 排序、分页（`start` / `limit`）、四种 `mode` 模式与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
 - **扁平模式的限制**：数组子文档未标 `nested: true` 时按 `object` 扁平索引，元素间的关联会丢失，跨字段的联合条件不保证落在同一元素。如 `find: { 'works.tag': 'a', 'works.qty': 9 }` 在扁平模式下会误命中「tag=a 与 qty=9 分属两个元素」的文档；要求同一元素同时满足时给该字段标 `nested: true`。
 - `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`counts` 统计自动内嵌 `reverse_nested` 回到父文档计数。

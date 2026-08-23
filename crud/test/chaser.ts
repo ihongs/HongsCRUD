@@ -51,6 +51,9 @@ const schemaP = new mongoose.Schema({
   hidden: { type: String, select: false },                      // 入索引可查，默认不随文档返回
   status: { type: String, enum: ['draft', 'published'], countable: true },
   body  : { type: String, analyzer: 'whitespace' },             // 字段级分词器，覆盖 esAnalyzer
+  essay : { type: String, cutText: 0 },                         // 不声明 keyword 子字段，只搜不精确匹配
+  story : { type: String, cutText: -1 },                        // keyword 不限长，超长串也能精确匹配
+  memo  : { type: String, cutText: 100 },                       // 自定义截断阈值
   arts  : { type: [new mongoose.Schema({ title: String, qty: Number })], nested: true },   // nested 内 text 入全文
 }, { collection: 'testChaserP', esIndex: 'hongs-test-chaser-p', esAnalyzer: 'simple' } as any);
 // simple / whitespace 均为 ES 内建分词器，无需安装插件
@@ -326,6 +329,11 @@ async function main(): Promise<void> {
   assert('mapping：同步戳为 date', mapP.syntTime, { type: 'date' });
   assert('mapping：canSync:false 字段不出现', 'secret' in mapP, false);
   assert('mapping：select:false 字段照常入索引', mapP.hidden.type, 'text');
+  assert('mapping：cutText:0 不声明 keyword 子字段', mapP.essay, { type: 'text', analyzer: 'simple' });
+  assert('mapping：cutText:-1 的 keyword 不限长', mapP.story,
+    { type: 'text', analyzer: 'simple', fields: { keyword: { type: 'keyword' } } });
+  assert('mapping：cutText:n 落为 ignore_above', mapP.memo,
+    { type: 'text', analyzer: 'simple', fields: { keyword: { type: 'keyword', ignore_above: 100 } } });
   assert('mapping：nested 容器声明 strict 与子字段', mapP.arts,
     { type: 'nested', dynamic: 'strict', properties: {
       title: { type: 'text', analyzer: 'simple', fields: { keyword: { type: 'keyword', ignore_above: 256 } } },
@@ -333,9 +341,9 @@ async function main(): Promise<void> {
     } });
 
   assert('getSyncable：点号路径齐全、排除 canSync:false', [ ...cp.getSyncable() ].sort(),
-    ['arts.qty', 'arts.title', 'body', 'hidden', 'name', 'note', 'status']);
+    ['arts.qty', 'arts.title', 'body', 'essay', 'hidden', 'memo', 'name', 'note', 'status', 'story']);
   assert('getTextable：排除 canText:false 与非 text', [ ...cp.getTextable() ].sort(),
-    ['arts.title', 'body', 'hidden', 'name']);
+    ['arts.title', 'body', 'essay', 'hidden', 'memo', 'name', 'story']);
   assert('getCountable', [ ...cp.getCountable() ].sort(), ['status']);
 
   const esMapP = (await es.indices.getMapping({ index: cp.getIndex() })) as any;
@@ -343,7 +351,8 @@ async function main(): Promise<void> {
 
   const [ p8 ] = await (cp.add({
     name: 'paper one', note: 'zebra coffee', secret: 'topsecret', hidden: 'hid-one',
-    status: 'draft', body: 'BodyText', arts: [{ title: 'deep art', qty: 2 }],
+    status: 'draft', body: 'BodyText', essay: 'tale of two cities', story: 'y'.repeat(300), memo: 'keep short',
+    arts: [{ title: 'deep art', qty: 2 }],
   }) as unknown as Promise<[any, string]>);
   await refresh(cp);
 
@@ -355,6 +364,11 @@ async function main(): Promise<void> {
   assert('wd 命中 nested 子文档内文本', await names(cp, { wd: 'deep' }), ['paper one']);
   assert('wd 命中普通 text 字段', await names(cp, { wd: 'paper' }), ['paper one']);
 
+  // cutText 只改 mapping，查询侧不做判断：0 的字段等值静默不命中，-1 的超长串照常精确匹配
+  assert('cutText:0 的字段照常入全文', await names(cp, { wd: 'cities' }), ['paper one']);
+  assert('cutText:0 的字段等值静默不命中', await names(cp, { find: { essay: 'tale of two cities' } }), [ ]);
+  assert('cutText:-1 的超长串（300 字符）仍可精确匹配', await names(cp, { find: { story: 'y'.repeat(300) } }), ['paper one']);
+
   const hidHit = await cp.search({ find: { hidden: 'hid-one' }, limit: 10 }, CTX as any);
   assert('select:false 字段可查', hidHit.total, 1);
   assert('items 默认不含 select:false 字段', (hidHit.items?.[0] as any)?.hidden, undefined);
@@ -363,6 +377,13 @@ async function main(): Promise<void> {
 
   const c8 = await counts(cp, { });
   assert('counts.status', c8.counts.status, { draft: 1 });
+
+  // $search：字段级分词匹配，符号对齐 mongo 的 $text.$search（mongo 社区版无此能力）
+  await (cp.add({ name: 'body two', status: 'published', body: 'hello big world' }) as unknown as Promise<[any, string]>);
+  await refresh(cp);
+  assert('$search 单字段分词命中', await names(cp, { find: { body: { $search: 'hello world' } } }), ['body two']);
+  assert('$search operator and 缺词不命中', await names(cp, { find: { body: { $search: 'hello missing' } } }), [ ]);
+  assert('$search 非 text 字段抛 PARAMS_INVALID', await errnoOf(() => cp.search({ find: { status: { $search: 'x' } } }, CTX as any)), -32602);
 
   // 有 select:false 可同步字段时 set 降级 syncFind 回查（含 +field 补偿），改后新值可查
   await (cp.set(String(p8._id), { note: 'zebra tea' }) as unknown as Promise<[any, number]>);
