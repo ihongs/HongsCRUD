@@ -183,6 +183,16 @@ export class Cradle implements Crud {
     return data;
   }
 
+  getCountCols(): string[] {
+    const cts: string[] = [];
+    for (const [key, path] of Object.entries(this.getSchema().paths)) {
+      if (key.startsWith('__')) continue;
+      const ops = (path as any).options || {};
+      if (ops.countable) cts.push( key );
+    }
+    return cts;
+  }
+
   /* ---------- core methods ---------- */
 
   /**
@@ -242,7 +252,7 @@ export class Cradle implements Crud {
    */
   putAll(ids: string[], data : Record<string, any>): number {
     const Model = this.getModel();
-    const cond = findMerge(ids, undefined);
+    const cond = mixFinds(ids, undefined);
     return Model.updateMany(cond, { $set: data }).exec()
       .then(res => Number(res.modifiedCount ?? 0)) as unknown as number;
   }
@@ -253,7 +263,7 @@ export class Cradle implements Crud {
    */
   delAll(ids: string[], data?: Record<string, any>): number {
     const Model = this.getModel();
-    const cond = findMerge(ids, undefined);
+    const cond = mixFinds(ids, undefined);
     const sdel = this.getSoftDeleteData();
     if (sdel) {
       // 排除已伪删除的, 免得重复标记刷新删除时间
@@ -272,7 +282,7 @@ export class Cradle implements Crud {
    */
   chkIds(ids: string[], find?: Record<string, any>, force?: boolean, action: string = 'update'): Promise<string[]> {
     const Model = this.getModel();
-    const cond = findMerge(ids, undefined, find);
+    const cond = mixFinds(ids, undefined, find);
     return Model.find(cond).select('_id').lean().exec()
       .then(docs => {
         const   existIds = new Set(docs.map(doc => String((doc as any)._id)));
@@ -336,7 +346,7 @@ export class Cradle implements Crud {
     const { id, wd, mode, find = {}, cols, sort, start = 0 } = params;
     const Model = this.getModel();
     const sdel  = this.getSoftDeleteCond();
-    const cond  = findMerge(id, wd, find, sdel);
+    const cond  = mixFinds(id, wd, find, sdel);
 
     // 0 不限，默认 limitDef，受 limitMax 约束
     const opts  = (this.getSchema() as any).options || {};
@@ -386,7 +396,7 @@ export class Cradle implements Crud {
     const Model = this.getModel();
     const sdel  = this.getSoftDeleteCond();
 
-    const baseCond: Record<string, any> = findMerge(id, wd, find, sdel);
+    const baseCond: Record<string, any> = mixFinds(id, wd, find, sdel);
 
     // sels 转 $in 查询（空数组视为没值，不生成任何条件）
     const selConds: Record<string, any> = {};
@@ -401,24 +411,13 @@ export class Cradle implements Crud {
     const totalCond    = { ...baseCond, ...selConds };
     const totalPromise = Model.countDocuments(totalCond).exec();
 
-    // 取出所有 countable: true 的字段
-    const countableFields: string[] = [];
-    for (const [key, path] of Object.entries(this.getSchema().paths)) {
-      if (key.startsWith('__')) continue;
-      const opts = (path as any).options || {};
-      if (opts.countable) countableFields.push(key);
-    }
-
     // 若传了 cols，按白/黑名单过滤；否则统计全部 countable
-    let targets = countableFields;
+    let targets: string[] = this.getCountCols();
     if (cols) {
       const mode = Object.values(cols).every(v => v === 1) ? 1 : 0;
-      targets = countableFields.filter(f =>
-        mode === 1 ? cols[f] === 1 : cols[f] !== 0
-      );
+      targets = targets.filter(f => mode === 1 ? cols[f] === 1 : cols[f] !== 0);
     }
-
-    if (!targets.length) {
+    if (! targets.length) {
       return totalPromise.then(total => ({ counts: {}, total })) as unknown as CountsResult;
     }
 
@@ -665,12 +664,13 @@ export function getValues(items: Record<string, any>[], valueField: string = 'va
   return items.map(item => String(item[valueField]));
 }
 
-export function findConds(
+export function mixConds(
   ...conds: (Record<string, any> | undefined | null)[]
 ): Record<string, any> {
   const conditions: Record<string, any>[] = [];
   for (const c of conds) {
-    if (c && Object.keys(c).length) conditions.push(c);
+    if (c && Object.keys(c).length)
+      conditions.push(c);
   }
   if (conditions.length === 0)
     return {};
@@ -679,25 +679,31 @@ export function findConds(
   return { $and : conditions };
 }
 
-export function findMerge(
-  id: string | string[] | undefined,
-  wd: string | undefined,
+export function mixFinds(
+  id: undefined | string | string[],
+  wd: undefined | string ,
   ...conds: (Record<string, any> | undefined | null)[]
 ): Record<string, any> {
   const conditions: Record<string, any>[] = [];
-  if (id !== undefined) {
+  if (id) {
     const ids = !Array.isArray(id) ? [id] : id;
-    conditions.push(ids.length === 1
-      ? { _id: new mongoose.Types.ObjectId(ids[0]) }
-      : { _id: { $in: ids.map(i => new mongoose.Types.ObjectId(i)) } });
+    if (ids.length > 1) {
+      conditions.push({ _id: { $in: ids.map(i => new mongoose.Types.ObjectId(i)) } });
+    } else
+    if (ids.length > 0) {
+      conditions.push({ _id: new mongoose.Types.ObjectId(ids[0]) });
+    }
   }
   if (wd) {
-    const ws = wd.trim();
-  if (ws) {
-    conditions.push({ $text: { $search: ws } });
-  }}
+    const ts = wd.trim( );
+    if (ts) {
+      conditions.push({ $text: { $search: ts } });
+    }
+  }
   for (const c of conds) {
-    if (c && Object.keys(c).length) conditions.push(c);
+    if (c && Object.keys(c).length) {
+      conditions.push(c);
+    }
   }
   if (conditions.length === 0)
     return {};
