@@ -782,14 +782,14 @@ function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
   // minlength/maxlength 按节点类型分派
   if (opts.minlength !== undefined) {
     const v = firstOf(opts.minlength);
-    if      (node.type === 'array' ) node.minItems      = v;
-    else if (node.type === 'object') node.minProperties = v;
+    if      (node.type === 'object') node.minProperties = v;
+    else if (node.type === 'array' ) node.minItems      = v;
     else                             node.minLength     = v;
   }
   if (opts.maxlength !== undefined) {
     const v = firstOf(opts.maxlength);
-    if      (node.type === 'array' ) node.maxItems      = v;
-    else if (node.type === 'object') node.maxProperties = v;
+    if      (node.type === 'object') node.maxProperties = v;
+    else if (node.type === 'array' ) node.maxItems      = v;
     else                             node.maxLength     = v;
   }
 
@@ -798,22 +798,22 @@ function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
     node.pattern = m instanceof RegExp ? m.source : String(m);
   }
 
-  if (opts.select    === false) node.writeOnly        = true;
-  if (opts.assign    === false) node.readOnly         = true;
-  if (opts.immutable === true ) node['x-immutable'  ] = true;
-  if (opts.countable === true ) node['x-countable'  ] = true;
+  if (opts.select    === false) node.writeOnly      = true;
+  if (opts.assign    === false) node.readOnly       = true;
+  if (opts.immutable === true ) node['x-immutable'] = true;
+  if (opts.countable === true ) node['x-countable'] = true;
 
+  // 关联或枚举，有 items 无 method 即取自 references，记下以便输出选项数据
   if (opts.reference) {
     node['x-reference'] = opts.reference;
-    // 有 items 无 method 即取自 references，记下以便按需输出
     if (refs && opts.reference.items && ! opts.reference.method) {
       refs.add(opts.reference.items);
     }
   }
 
-  // 公开选项，键加 x- 前缀
-  if (opts.options) {
-    for (const [key, val] of Object.entries(opts.options)) {
+  // 公开扩展选项，键加 x- 前缀
+  if (opts.extra) {
+    for (const [key, val] of Object.entries(opts.extra)) {
       node['x-' + key] = val;
     }
   }

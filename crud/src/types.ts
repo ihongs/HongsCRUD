@@ -128,7 +128,7 @@ export interface SchemaParams {
  *       value: 'value', // 取值字段名，默认为 value
  *       title: 'title', // 标题字段名，默认为 title
  *     },
- *     options: { // 对应 x-opt，不确定的公开选项
+ *     extra: { // 对应 x-opt，不确定的公开扩展选项
  *       opt: 'value',
  *     },
  *     title: '字段1', // 对应 x-title
