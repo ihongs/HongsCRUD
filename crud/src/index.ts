@@ -419,7 +419,7 @@ export class Cradle implements Crud {
     }
 
     if (!targets.length) {
-      return totalPromise.then(total => ({ counts: {}, count: total })) as unknown as CountsResult;
+      return totalPromise.then(total => ({ counts: {}, total })) as unknown as CountsResult;
     }
 
     // 分两组：
