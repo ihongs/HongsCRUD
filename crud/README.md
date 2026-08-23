@@ -525,7 +525,7 @@ export class Chaser extends Cradle {
   syncDocs(docs: any[], opts?: SyncOpts): Promise<SyncStat>;
   syncDels(ids: string[], opts?: SyncOpts): Promise<SyncStat>;
   syncFind(find?: Record<string, any>, opts?: SyncFindOpts): Promise<SyncStat>;
-  syncPurge(opts: SyncPurgeOpts): Promise<SyncStat>;
+  syncCull(opts : SyncCullOpts): Promise<SyncStat>;
 }
 
 /** 注册 / 读取全局默认 ES 客户端 */
@@ -712,7 +712,7 @@ await userCrud.syncFind({ updatedAt: { $gte: new Date(Date.now() - 25 * 3600e3) 
 await userCrud.syncFind();
 
 // 只清理不刷新（明确知道水位时；since 必传，且须早于最近一次全量同步的开始时间）
-await userCrud.syncPurge({ since: lastSyncStartAt });
+await userCrud.syncCull({ since: lastSyncStartAt });
 
 // 索引管理：makeIndex 确保存在（幂等，已存在不动）、initIndex 删后重建（改类型 / 分词用，有空窗）、
 // dropIndex 删索引、pushMapping 增量推送 mapping
@@ -730,9 +730,8 @@ interface SyncOpts {                       // 同步公共选项
 }
 interface SyncFindOpts extends SyncOpts {
   batch?: number;                          // 每批文档数，默认 1000
-  purge?: boolean;                         // 仅全量（不传 find）时有效，默认 true
 }
-interface SyncPurgeOpts extends SyncOpts {
+interface SyncCullOpts extends SyncOpts {
   since : Date;                            // 水位，删除同步戳早于此时间的文档，必传
 }
 interface SyncStat {
@@ -747,8 +746,8 @@ interface SyncStat {
 同步规则：
 
 - 查询同步用 mongo 游标逐个取、攒批（每批 `batch` 条）一次 bulk 提交，文档量大时内存可控；重复同步幂等（`index` 按 `_id` 整体覆盖，`delete` 对不存在的 id 不报错），重叠区间安全。
-- 全量 `syncFind()` 先记水位 T，扫完全量后补一次 `syncPurge({ since: T })`，把「ES 里有、mongo 里已无」的孤立记录清掉，一趟完成补齐与清理且无空窗（不需要先清空索引）；失败数不为 0 时跳过收尾清理，以免误删同步失败的文档。
-- 单独调 `syncPurge` 必须传 `since`，且该时刻要早于最近一次覆盖全量的同步的开始时间，否则会删掉正常数据；不提供默认值就是为了避免误用。
+- 全量 `syncFind()` 先记水位 T，扫完全量后补一次 `syncCull({ since: T })`，把「ES 里有、mongo 里已无」的孤立记录清掉，一趟完成补齐与清理且无空窗（不需要先清空索引）；失败数不为 0 时跳过收尾清理，以免误删同步失败的文档。
+- 单独调 `syncCull` 必须传 `since`，且该时刻要早于最近一次覆盖全量的同步的开始时间，否则会删掉正常数据；不提供默认值就是为了避免误用。
 - 增量同步依赖 `timestamps` 的 `updatedAt` 做水位，条件由调用方自行拼；Schema 未启用 `timestamps` 时只能全量。
 - 全量 `syncFind()` 成本远高于增量（扫 mongo 全量并重写整个索引），百万级可每天跑、千万级建议低峰期每天一次、亿级建议每周或按段切分；不要与增量同步混在一个定时任务里。
 - 不引入队列与重试机制：失败明细记入 `SyncStat.errors`，由下一次定时 `syncFind` 自然补偿。

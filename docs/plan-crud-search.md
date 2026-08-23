@@ -13,7 +13,7 @@
 | 文件 | 内容 |
 |---|---|
 | `crud/src/search/index.ts` | `Chaser` 类、`setEsClient` / `getEsClient`、mapping 推导与 find→DSL 翻译等内部函数 |
-| `crud/src/search/types.ts` | `SyncOpts` / `SyncFindOpts` / `SyncPurgeOpts` / `SyncStat` 等本组件类型，以及 Schema 扩展选项与字段扩展项的类型声明 |
+| `crud/src/search/types.ts` | `SyncOpts` / `SyncFindOpts` / `SyncCullOpts` / `SyncStat` 等本组件类型，以及 Schema 扩展选项与字段扩展项的类型声明 |
 | `crud/src/types.ts` | 不放 ES 相关类型；`wd?: string` 已加（`SearchParams` / `CountsParams`），仅余扩展点文档注释的补充 |
 | `crud/src/index.ts` | **不导出 `search`**，保持现状；`search` 走 subpath 单独导出，见下「依赖隔离」 |
 
@@ -599,11 +599,11 @@ class Chaser extends Cradle {
 
   /**
    * 按条件游标遍历 mongo（不排除伪删除），攒批交给 syncDocs
-   * 不传 find 即全量，且默认在结束后按同步戳水位补一次 syncPurge（见下）
+   * 不传 find 即全量，且默认在结束后按同步戳水位补一次 syncCull（见下）
    */
   syncFind(find?: Record<string, any>, opts?: SyncFindOpts): Promise<SyncStat>;
   /** 删除同步戳早于水位的 ES 文档（一条 delete_by_query），清理 mongo 已不存在的记录 */
-  syncPurge(opts?: SyncPurgeOpts): Promise<SyncStat>;
+  syncCull(opts?: SyncCullOpts): Promise<SyncStat>;
 }
 
 interface SyncOpts {
@@ -612,10 +612,9 @@ interface SyncOpts {
 
 interface SyncFindOpts extends SyncOpts {
   batch?: number;                   // 每批文档数，默认 1000
-  purge?: boolean;                  // 仅全量（不传 find）时有效，默认 true，见下
 }
 
-interface SyncPurgeOpts extends SyncOpts {
+interface SyncCullOpts extends SyncOpts {
   since : Date;                     // 水位，删除同步戳早于此时间的文档，必传
 }
 
@@ -631,7 +630,7 @@ interface SyncStat {
 方法收敛的理由：
 
 - `syncIds(ids)` 就是 `syncFind({ _id: { $in: ids } })`，`syncAll(opts)` 就是 `syncFind()` 或 `syncFind({ updatedAt: { $gte } })`，都只是入参变形，不单独提供；调用处直接写条件更直白，也不必约定「`since` 为数字表示相对毫秒」这类隐含语义。
-- `syncPurge` 的数据流是反的（以 ES 为准清理，不读 mongo），塞进 `syncFind` 语义混乱，独立成方法，它也是 5.4 遗留问题的兜底工具。
+- `syncCull` 的数据流是反的（以 ES 为准清理，不读 mongo），塞进 `syncFind` 语义混乱，独立成方法，它也是 5.4 遗留问题的兜底工具。
 - `syncDocs` / `syncDels` 已是批量，`add` / `set` 传 `[ doc ]` 即可，不再封装单文档的 `syncDoc` / `syncDel`。
 
 分层的必要性：
@@ -650,10 +649,10 @@ interface SyncStat {
 
 `syncDocs` 每次写入都把该字段置为当前时间，于是全量同步跑完之后，「ES 里同步戳早于水位 T 的文档」等价于「本轮全量同步没碰过的文档」，也就必然是 mongo 里已经不存在的孤立记录。据此：
 
-- **`syncPurge({ since: T })` 只需一条 `delete_by_query { range: { [esSyncTime]: { lt: T } } }`**（含该字段不存在的文档），不必拉取 ES 全部 `_id`、不必回 mongo 比对、不必维护分批状态机，也没有「读 ES 与查 mongo 之间的时间窗内数据变动导致误删」的竞态——水位由 T 明确界定，且 T 取全量同步**开始前**的时刻，天然带安全余量。
-- **`syncFind()` 不传条件时**：先记 `T = now`，再以 mongo 游标扫全量（与带条件时同一套逻辑），`purge` 不为 `false` 时结束后补一次 `syncPurge({ since: T })` 收尾。这样一趟同时完成「补齐 / 覆盖」与「清理孤立记录」，且**无空窗**（不需要 `initIndex(true)` 先清空）。
-- 全量必须以 **mongo 为遍历源**，不能反过来遍历 ES 的同步戳：ES 里压根没有的文档（新增未同步、`esAutoSync: false` 期间写入、上次同步失败）不在 ES 索引中，从 ES 侧无从发现，只有扫 mongo 才能补齐。同步戳的作用只是「反向标记谁没被碰过」，供 purge 用。
-- 传了 `find` 的增量同步不做 purge：它只覆盖部分文档，水位对未覆盖的部分不成立，跑 purge 会删掉正常数据。
+- **`syncCull({ since: T })` 只需一条 `delete_by_query { range: { [esSyncTime]: { lt: T } } }`**（含该字段不存在的文档），不必拉取 ES 全部 `_id`、不必回 mongo 比对、不必维护分批状态机，也没有「读 ES 与查 mongo 之间的时间窗内数据变动导致误删」的竞态——水位由 T 明确界定，且 T 取全量同步**开始前**的时刻，天然带安全余量。
+- **`syncFind()` 不传条件时**：先记 `T = now`，再以 mongo 游标扫全量（与带条件时同一套逻辑），结束后补一次 `syncCull({ since: T })` 收尾。这样一趟同时完成「补齐 / 覆盖」与「清理孤立记录」，且**无空窗**（不需要 `initIndex(true)` 先清空）。
+- 全量必须以 **mongo 为遍历源**，不能反过来遍历 ES 的同步戳：ES 里压根没有的文档（新增未同步、`esAutoSync: false` 期间写入、上次同步失败）不在 ES 索引中，从 ES 侧无从发现，只有扫 mongo 才能补齐。同步戳的作用只是「反向标记谁没被碰过」，供 syncCull 用。
+- 传了 `find` 的增量同步不做 syncCull：它只覆盖部分文档，水位对未覆盖的部分不成立，跑 syncCull 会删掉正常数据。
 
 `syncFind` 可直接被业务当作补偿工具与定时任务用：
 
@@ -668,7 +667,7 @@ await userCrud.syncFind({ updatedAt: { $gte: new Date(Date.now() - 25 * 3600e3) 
 await userCrud.syncFind();
 
 // 只清理不刷新（明确知道水位时）
-await userCrud.syncPurge({ since: lastSyncStartAt });
+await userCrud.syncCull({ since: lastSyncStartAt });
 
 // 改过字段类型 / 分词，只能重建（有空窗）
 await userCrud.initIndex(true);
@@ -681,9 +680,9 @@ await userCrud.syncFind();
 - 查询同步的 mongo 查询自动对「`select: false` 但可同步」的字段补 `+field`，保证 ES 侧字段完整。
 - 重复同步是幂等的（`bulk index` 按 `_id` 整体覆盖，`bulk delete` 对不存在的 id 也不报错），故重叠区间安全。
 - 伪删除的文档从 ES 物理删除，ES 中只留有效文档；查询同步不加 `getSoftDeleteCond()` 过滤而是 `+isDeleted` 取回标记，靠 `syncDocs` 内的判断分流。`isDeleted` / `deletedAt` 都不入索引。
-- 全量 `syncFind()` 要扫 mongo 全部文档并全量重写 ES，成本远高于增量，百万级可每天跑、千万级建议低峰期每天一次、亿级建议每周或按段切分；不要与增量同步混在一个定时任务里。收尾的 `syncPurge` 只是一条 `delete_by_query`，相比之下可忽略。
-- 单独调 `syncPurge` 必须传 `since`，且该时刻要早于最近一次覆盖全量的同步的开始时间，否则会删掉正常数据；不提供默认值就是为了避免误用。
-- 不引入队列与重试机制：失败明细记入 `SyncStat.errors`，由下一次定时 `syncFind` 自然补偿。注意失败的文档同步戳没被刷新，若紧接着跑 `syncPurge` 会被误删，故失败数不为 0 时应跳过 purge（`syncFind()` 内部即按此处理）。
+- 全量 `syncFind()` 要扫 mongo 全部文档并全量重写 ES，成本远高于增量，百万级可每天跑、千万级建议低峰期每天一次、亿级建议每周或按段切分；不要与增量同步混在一个定时任务里。收尾的 `syncCull` 只是一条 `delete_by_query`，相比之下可忽略。
+- 单独调 `syncCull` 必须传 `since`，且该时刻要早于最近一次覆盖全量的同步的开始时间，否则会删掉正常数据；不提供默认值就是为了避免误用。
+- 不引入队列与重试机制：失败明细记入 `SyncStat.errors`，由下一次定时 `syncFind` 自然补偿。注意失败的文档同步戳没被刷新，若紧接着跑 `syncCull` 会被误删，故失败数不为 0 时应跳过 syncCull（`syncFind()` 内部即按此处理）。
 
 ### 5.3 refresh 与失败处理
 
@@ -694,7 +693,7 @@ await userCrud.syncFind();
 
 **未启用 `softDelete` 且 `esAutoSync: false` 时，ES 中的已删记录无法被定时同步清理。**
 
-原因：硬删除后 mongo 里没有任何痕迹，定时同步只能扫到「还活着的文档」，无从得知哪些 id 已经消失；`esAutoSync: false` 又意味着 `delAll` 当时也没有通知 ES。此时唯一的兜底是「全量 `syncFind()` + 同步戳水位 `syncPurge`」，它虽然可靠且无空窗，但要扫 mongo 全量并重写整个索引，不适合频繁执行。
+原因：硬删除后 mongo 里没有任何痕迹，定时同步只能扫到「还活着的文档」，无从得知哪些 id 已经消失；`esAutoSync: false` 又意味着 `delAll` 当时也没有通知 ES。此时唯一的兜底是「全量 `syncFind()` + 同步戳水位 `syncCull`」，它虽然可靠且无空窗，但要扫 mongo 全量并重写整个索引，不适合频繁执行。
 
 可选的后续方案（留待以后评估）：
 
@@ -711,7 +710,7 @@ await userCrud.syncFind();
 | 阶段 | # | 任务 | 要点 | 文件 | 验收 |
 |---|---|---|---|---|---|
 | 一 骨架与依赖 | 1 | 依赖与入口隔离 | `package.json`：`exports` 由字符串改为对象，拆 `.` 与 `./search` 两入口并各带 `types`，加 `typesVersions` 兜底 `node10`；`@elastic/elasticsearch` 进 peer（`peerDependenciesMeta.optional: true`）与 dev 依赖，加 `test:chaser` 脚本。`crud/src/index.ts` 不导出 `search`（`search/index.ts` 内 `export * from './types'`，自成入口）；`tsconfig.json` 无需改动（`rootDir: ./src` 自动把 `src/search/**` 编译进 `dist/search/`）。见 0 节。 | `crud/package.json` | 不装 ES 客户端且不用 `search` 的使用方，安装 / 类型检查 / 打包三环节均不受影响；`hongs-crud/search` 可正常解析。 |
-| 一 骨架与依赖 | 2 | 类型与扩展点声明 | `search/types.ts`：`SyncOpts` / `SyncFindOpts` / `SyncPurgeOpts` / `SyncStat`，及 Schema 扩展选项、字段扩展项的类型声明。`crud/src/types.ts`：仅在扩展点文档注释补字段级 `canSync` / `canText` / `nested` / `analyzer` 与 Schema 级 `esIndex` / `esFullText` / `esSyncTime` / `esAnalyzer` / `esAutoSync` / `esSyncError`；`wd` 已在位，类型定义不动。见 1.1。 | `crud/src/search/types.ts`、`crud/src/types.ts` | `tsc` 通过；主类型文件无 ES 具体类型外溢。 |
+| 一 骨架与依赖 | 2 | 类型与扩展点声明 | `search/types.ts`：`SyncOpts` / `SyncFindOpts` / `SyncCullOpts` / `SyncStat`，及 Schema 扩展选项、字段扩展项的类型声明。`crud/src/types.ts`：仅在扩展点文档注释补字段级 `canSync` / `canText` / `nested` / `analyzer` 与 Schema 级 `esIndex` / `esFullText` / `esSyncTime` / `esAnalyzer` / `esAutoSync` / `esSyncError`；`wd` 已在位，类型定义不动。见 1.1。 | `crud/src/search/types.ts`、`crud/src/types.ts` | `tsc` 通过；主类型文件无 ES 具体类型外溢。 |
 | 二 Chaser 与 mapping | 3 | Chaser 骨架与客户端 | `Chaser extends Cradle`：构造 `(schema, model?, es?)`，特殊选项一律读 Schema 扩展选项；`getClient` / `getIndex`（`esIndex || collection`）；全局客户端注册 `setEsClient` / `getEsClient`。见 2 节。 | `crud/src/search/index.ts` | 构造期不触达 ES；未注入 `es` 时取全局注册，缺失抛 `INTERNEL_ERROR`。 |
 | 二 Chaser 与 mapping | 4 | mapping 推导与字段清单 | 默认全字段，仅排除 `canSync: false` 与不可映射类型（如 `Map`）；object / nested 递归（见 1.3）；根级与所有 object / nested 一律 `dynamic: 'strict'`；`text` 分词器按「字段级 `analyzer` > Schema 级 `esAnalyzer` > 不设」；合并字段 `esFullText`（`{ type: 'text' }`，不用 `copy_to`，并加 `_source: { excludes: [ esFullText ] }`）与同步戳字段 `esSyncTime`（`type: 'date'`）入 mapping。推导阶段一并产出 `getSyncable()` / `getTextable()`（入索引的 `text` 字段再排除 `canText: false`）/ `getCountable()` / `getNestedPaths()` 与 `getFullText(doc)` 默认实现（按 `getTextable()` 取值、扁平化数组、去空去重后 `join(' ')`，`protected` 供子类覆盖追加标签等派生文本）。见 1.2。 | `crud/src/search/index.ts` | 对含 nested / 扁平数组 / `select: false` 字段的典型 Schema，mapping 与字段清单符合 1.2 / 1.3 的约定。 |
 | 二 Chaser 与 mapping | 5 | 索引管理 | `initIndex`（按 `getMapping()` 建索引，`force` 先删后建；索引按需惰性建立，见 0 节）/ `dropIndex` / `pushMapping`（与索引现有 mapping 做 diff，只 `putMapping` 新增字段，返回新增字段名数组）。见 1.4。 | `crud/src/search/index.ts` | `initIndex` 幂等；`pushMapping` 不改既有字段定义。 |
@@ -719,11 +718,11 @@ await userCrud.syncFind();
 | 三 查询 | 7 | search 覆盖 | `sort`（含 nested 排序）/ 分页 / 四种 `mode` 模式；ES 侧 `_source: false` 只取 id 与 `_score`，命中 id 一律回 mongo 取文档并按 ES 顺序重排，`cols` 交 mongo 处理。见 3 节、2.2。 | `crud/src/search/index.ts` | 四种 `mode`、排序、分页、`total` / `more` 行为与 mongo 版一致；`wd` 命中合并字段。 |
 | 三 查询 | 8 | counts 覆盖 | 单请求 filter + terms 聚合，nested 走 `reverse_nested`。见 4 节。 | `crud/src/search/index.ts` | 结果与 mongo 版一致；一次请求完成全部字段统计。 |
 | 四 同步 | 9 | 文档同步 | `syncDocs`：唯一 ES 写入出口，逐个读删除标记分流（为真转 delete 动作），`index` 与 `delete` 两种动作拼进同一个 bulk；`index` 时调 `getFullText(doc)` 填合并字段、把同步戳置为当前时间。`syncDels`：按 id 的 bulk delete，无需查 doc。refresh 与失败处理见 5.3。 | `crud/src/search/index.ts` | 伪删文档写入即转 delete；bulk 失败逐项计入 `SyncStat` 并按 `esSyncError` 处理。 |
-| 四 同步 | 10 | 查询同步与清理 | `syncFind`：mongo 游标逐个取、攒够 `batch` 条 flush 一次 `syncDocs`；不排除伪删除（`+isDeleted` 取回标记）；不传 `find` 即全量，先记水位 `T = now`，结束后若无失败且 `purge !== false` 则补一次 `syncPurge({ since: T })`。`syncPurge`：一条 `delete_by_query { range: { [esSyncTime]: { lt: since } } }`，删除同步戳早于水位的孤立记录，`since` 必传。见 5.2。 | `crud/src/search/index.ts` | 全量 `syncFind()` 一趟完成补齐与清理且无空窗；`syncPurge` 不传 `since` 报错；游标攒批内存平稳。 |
+| 四 同步 | 10 | 查询同步与清理 | `syncFind`：mongo 游标逐个取、攒够 `batch` 条 flush 一次 `syncDocs`；不排除伪删除（`+isDeleted` 取回标记）；不传 `find` 即全量，先记水位 `T = now`，结束后若无失败则补一次 `syncCull({ since: T })`。`syncCull`：一条 `delete_by_query { range: { [esSyncTime]: { lt: since } } }`，删除同步戳早于水位的孤立记录，`since` 必传。见 5.2。 | `crud/src/search/index.ts` | 全量 `syncFind()` 一趟完成补齐与清理且无空窗；`syncCull` 不传 `since` 报错；游标攒批内存平稳。 |
 | 四 同步 | 11 | 写入覆盖 | 覆盖 `add` / `set` / `putAll` / `delAll`（`setAll` 内部逐个调 `set`，随 `set` 自动同步，无需覆盖；`create` / `update` / `delete` / `upsert` 内部只调被覆盖方法，亦自动获得同步）：`add` / `set` super 后 `syncDocs([ doc ])`，doc 不完整（`select: false` 投影）则降级 `syncFind` 回查；`putAll` super 后 `syncFind({ _id: { $in: ids } })`；`delAll` super 后 `syncDels(ids)`，无视 `softDelete`。四者的自动同步均受 `esAutoSync` 控制。见 5.1。 | `crud/src/search/index.ts` | `esAutoSync: false` 时四方法只调 `super` 不触 ES；`setAll` / `create` / `update` / `upsert` 无需单独处理即同步。 |
 | 五 测试与文档 | 12 | 基础测试 | 前置本地 MongoDB 与 ES；`initIndex` -> 经 `Chaser` 增改删（`refresh: 'wait_for'`）-> `search` / `counts` 校验；含扁平数组子文档与 nested 两组对照用例、`syncDocs` 直接文档同步与 `syncFind` 条件同步用例、伪删除后 ES 查不到的用例、`esAutoSync: false` 时写入不自动同步（`search` 查不到）再由 `syncFind()` 补齐（含伪删除记录被清掉）的用例。 | `crud/test/chaser.ts` | 本组用例全过（`npm run test:chaser`）。 |
 | 五 测试与文档 | 13 | 查询与 mapping 进阶测试 | `canSync: false` 字段不可查用例、`select: false` 字段可查且照常返回用例、全文用例（默认 `getFullText` 拼接后 `wd` 能命中各文本字段含 nested 子文档内的文本；`canText: false` 的字段 `wd` 查不到但仍可 `find` 精确查；子类覆盖 `getFullText` 追加码值标签后 `wd` 用标签能命中；改完 `getFullText` 只跑 `syncFind()` 即生效，不重建索引）、`pushMapping()` 增量推送用例（Schema 加字段后返回新增字段名、旧字段定义不变、`syncFind()` 回填后新字段可查）、`dynamic: 'strict'` 用例（未在 mapping 中声明的字段直接写 ES 报错）、分词器用例（`esAnalyzer` 与字段级 `analyzer` 落到 mapping 上，非 `text` 字段标 `analyzer` 构造报错；分词插件视环境可选跳过）。 | `crud/test/chaser.ts` | 本组用例全过。 |
-| 五 测试与文档 | 14 | 同步进阶测试 | `syncFind` 增量区间（`updatedAt` 水位）用例、同步戳水位用例（直接往 ES 塞一条 mongo 不存在的孤立记录，`syncFind()` 后被清掉；单独 `syncPurge({ since })` 按水位删除；`syncPurge` 不传 `since` 报错）、`initIndex(true) + syncFind()` 全量重建用例。 | `crud/test/chaser.ts` | 本组用例全过。 |
+| 五 测试与文档 | 14 | 同步进阶测试 | `syncFind` 增量区间（`updatedAt` 水位）用例、同步戳水位用例（直接往 ES 塞一条 mongo 不存在的孤立记录，`syncFind()` 后被清掉；单独 `syncCull({ since })` 按水位删除；`syncCull` 不传 `since` 报错）、`initIndex(true) + syncFind()` 全量重建用例。 | `crud/test/chaser.ts` | 本组用例全过。 |
 | 五 测试与文档 | 15 | README 增补 | 字段级 `canSync` / `canText` / `nested` / `analyzer` 与 Schema 级 `es*` 扩展选项（含 `esFullText` / `esSyncTime` 及其「仅供组件内部使用、不可在 `find` / `sort` / `counts` 中引用」的说明，以及 `esAnalyzer` 与字段级 `analyzer` 的覆盖关系、需自行安装分词插件、改分词器要重建索引）；`getFullText(doc)` 的说明（默认按文本字段清单拼接、不用 `copy_to`；`canText: false` 排除某字段；子类覆盖以追加码值标签 / 关联名称等派生文本的示例；改实现后只需 `syncFind()`）；`Chaser` 用法（**从 subpath 引入**：`import { Chaser } from 'hongs-crud/search'`，`new Chaser(schema, model?, es?)`；主入口 `hongs-crud` 不含 `search`，用不到搜索的项目无需安装 `@elastic/elasticsearch`，安装 / 类型检查 / 打包三环节均不受影响）；`esAutoSync` 与定时同步示例；1.4 的 Schema 变更流程（加字段走 `pushMapping()` + `syncFind()`，删字段只需 `syncFind()` 覆盖旧值，改类型 / 分词才 `initIndex(true) + syncFind()`）；返回文档一律来自 mongo、删除无视 `softDelete`（ES 只留有效文档）、扁平模式下跨字段条件的限制、`select: false` 默认同步的说明。 | `crud/README.md` | 文档与实现一致，无过期描述。 |
 
 ## 7. 已确认的取舍
@@ -736,16 +735,16 @@ await userCrud.syncFind();
 - 合并字段的内容一律由 `getFullText(doc)` 自行拼装后随文档写入，**不用 ES 的 `copy_to`**，也不提供二选一开关：`copy_to` 只能拷字段原始值（`status: 1` 拷进去就是 `"1"`，搜不到「已发布」），而码值转标签 / 关联 id 转名称这类派生文本是必需能力，`copy_to` 只是它的真子集；改全文内容只需 `syncFind()` 覆盖一遍（改 `copy_to` 属改已有字段定义，得 `initIndex(true)` 重建、有空窗）；nested 内文本可直接扁平化进根级全文，不受 `copy_to` 只能拷向祖先的约束；全文内容是可打印的字符串，便于排查。默认实现按「入索引的 `text` 字段再排除 `canText: false`」取值拼接，`protected` 供子类覆盖；合并字段加 `_source: { excludes: [ esFullText ] }`，不占 `_source` 空间。见 1.2。
 - 分词器两级可配：Schema 选项 `esAnalyzer` 定索引默认，字段扩展项 `analyzer` 就近覆盖，都不设则用 ES 的 `standard`；只对 `text` 生效，标在非 `text` 字段上视为配置矛盾。`wd` 的分词只由合并字段（取 `esAnalyzer`）决定，因为 `getFullText()` 拼进去的是原始文本，源字段各自的 `analyzer` 不影响 `wd`。不开放 `search_analyzer`，组件也不负责安装分词插件（未安装则建索引时由 ES 报错）。
 - `search` / `counts` 的 ES 侧一律 `_source: false`，返回文档统一回 mongo 取，不提供来源开关。
-- 同步分两层：文档同步（`syncDocs` / `syncDels`）是唯一 ES 写入出口，查询同步（`syncFind` / `syncPurge`）查到文档后转文档同步。`syncDocs` 传数组即可，不额外封装单文档方法；`syncDels` 只需 id，供 `delAll` 直接使用；不再提供 `syncIds` / `syncAll`（分别就是 `syncFind({ _id: { $in: ids } })` 与 `syncFind({})`）。
+- 同步分两层：文档同步（`syncDocs` / `syncDels`）是唯一 ES 写入出口，查询同步（`syncFind` / `syncCull`）查到文档后转文档同步。`syncDocs` 传数组即可，不额外封装单文档方法；`syncDels` 只需 id，供 `delAll` 直接使用；不再提供 `syncIds` / `syncAll`（分别就是 `syncFind({ _id: { $in: ids } })` 与 `syncFind({})`）。
 - `syncFind` 用 mongo 游标逐个取、攒批提交 bulk，不用 skip/limit 分页（大偏移越翻越慢、期间数据变动会漏），也不逐个原子写 ES（ES 无跨文档事务，bulk 的失败粒度与逐个写一致，却省掉每文档一次往返）。
 - `Cradle.add` 返回 `[ doc, id ]`、`Cradle.set` 返回 `[ doc, count ]`（**已实现**）：`Chaser` 覆盖 `add` / `set` / `putAll` / `delAll` 四个写入方法（`setAll` 内部逐个调 `set`，随 `set` 的覆盖自动同步，无需覆盖），super 后解构即得 doc，既不用复制 `Cradle` 的实现，也不用为拿 doc 再查一次 mongo；内部调用点已解构适配，对外 `Crud` 接口返回结构不变。
 - 索引里额外写一个同步戳字段（Schema 选项 `esSyncTime`，默认 `syncTime`，`type: 'date'`）：由 `syncDocs` 每次写入时置为当前时间，不并入合并字段，也不开放给 `find` / `sort` / `counts` 引用，只服务于同步机制。
 - mapping 根级与所有 object / nested 一律 `dynamic: 'strict'`：宁可「写入即失败」，也不让漏推的 mapping 被 ES 自动推导静默兜住（类型一旦推歪只能重建索引）。
 - Schema 加字段用 `pushMapping()` 增量推送（diff 后只 `putMapping` 新增字段，不动既有定义），再 `syncFind()` 回填数据；删字段无需动 mapping（ES 也删不掉字段定义），`syncFind()` 的整文档覆盖即可清掉旧值；改 `getFullText()` 的实现或某字段的 `canText` 不动 mapping，同样只需 `syncFind()`；只有改已有字段的类型 / 分词才退回有空窗的 `initIndex(true) + syncFind()`。见 1.4。
-- `syncPurge({ since })` 用同步戳水位实现：一条 `delete_by_query { range: { [esSyncTime]: { lt: since } } }` 删掉「本轮全量同步没碰过」的孤立记录，不必拉 ES 全部 `_id` 与 mongo 比对，也没有读 ES 与查 mongo 之间的竞态。`since` 必传，不给默认值以免误用。
-- 全量同步仍以 mongo 游标为遍历源（不用「从 ES 查同步戳落后的 id」驱动）：ES 里压根不存在的文档从 ES 侧无从发现。`syncFind()` 不传条件时先记水位 `T = now`，扫完全量后补 `syncPurge({ since: T })`，一趟完成补齐与清理且无空窗。
+- `syncCull({ since })` 用同步戳水位实现：一条 `delete_by_query { range: { [esSyncTime]: { lt: since } } }` 删掉「本轮全量同步没碰过」的孤立记录，不必拉 ES 全部 `_id` 与 mongo 比对，也没有读 ES 与查 mongo 之间的竞态。`since` 必传，不给默认值以免误用。
+- 全量同步仍以 mongo 游标为遍历源（不用「从 ES 查同步戳落后的 id」驱动）：ES 里压根不存在的文档从 ES 侧无从发现。`syncFind()` 不传条件时先记水位 `T = now`，扫完全量后补 `syncCull({ since: T })`，一趟完成补齐与清理且无空窗。
 - `esAutoSync` 默认 `true`；设为 `false` 时增改删不触发自动同步，改由定时 `syncFind` 分批补齐。
 - 删除无视 `softDelete`：ES 侧一律物理删除，索引中只保留有效文档，`isDeleted` / `deletedAt` 不入索引、查询不带排除条件；同步时由 `syncDocs` 读删除标记分流，为真的转成 bulk 的 `delete` 动作。
-- 遗留问题（见 5.4，本期不实现）：未启用 `softDelete` 又 `esAutoSync: false` 时，硬删除的记录只能靠低频的全量 `syncFind()`（含收尾的水位 `syncPurge`）兜底。
+- 遗留问题（见 5.4，本期不实现）：未启用 `softDelete` 又 `esAutoSync: false` 时，硬删除的记录只能靠低频的全量 `syncFind()`（含收尾的水位 `syncCull`）兜底。
 - 构造签名为 `new Chaser(schema, model?, es?)`：只在 `Cradle` 的 `model` 后加 `es`，其余特殊选项一律走 Schema 扩展选项（`esIndex` / `esFullText` / `esSyncTime` / `esAnalyzer` / `esAutoSync` / `esSyncError`）。
 - 深翻页（`search_after`）不在本期范围，`start + limit` 超 `max_result_window` 直接报错。

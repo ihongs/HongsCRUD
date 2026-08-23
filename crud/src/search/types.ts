@@ -12,10 +12,9 @@ export interface SyncOpts {
 
 export interface SyncFindOpts extends SyncOpts {
   batch?: number;                   // 每批文档数，默认 1000
-  purge?: boolean;                  // 仅全量（不传 find）时有效，默认 true
 }
 
-export interface SyncPurgeOpts extends SyncOpts {
+export interface SyncCullOpts extends SyncOpts {
   since : Date;                     // 水位，删除同步戳早于此时间的文档，必传
 }
 

@@ -450,7 +450,7 @@ async function main(): Promise<void> {
   assert('被拒写入未入库', (await cm2.search({ }, CTX as any)).total, 1);
 
   /* ---------- 11) 任务 14：同步进阶 ---------- */
-  console.log('\n--- 11) 同步进阶：增量水位 / 孤立清理 / syncPurge / 全量重建 ---');
+  console.log('\n--- 11) 同步进阶：增量水位 / 孤立清理 / syncCull / 全量重建 ---');
   await MT.deleteMany({});
   const ct = new Chaser(schemaT, MT, es);
   await ct.initIndex();
@@ -491,7 +491,7 @@ async function main(): Promise<void> {
     { total: 4, indexed: 4, deleted: 1, failed: 0 });
   assert('孤立记录已清', (await ct.search({ }, CTX as any)).total, 4);
 
-  // 单独 syncPurge：把某条 ES 文档的同步戳改旧，按水位删除（since 早于最近一次全量同步）
+  // 单独 syncCull：把某条 ES 文档的同步戳改旧，按水位删除（since 早于最近一次全量同步）
   const staleDoc = await MT.findOne({ name: 'inc one' });
   await es.index({
     index: ct.getIndex(), id: String((staleDoc as any)?._id),
@@ -499,14 +499,14 @@ async function main(): Promise<void> {
   });
   await refresh(ct);
   assert('旧同步戳文档仍在索引', (await ct.search({ }, CTX as any)).total, 4);
-  const purge = await ct.syncPurge({ since: new Date(Date.now() - 60000), refresh: true });
-  assert('syncPurge 按水位删除', { total: purge.total, indexed: purge.indexed, deleted: purge.deleted, failed: purge.failed },
+  const purge = await ct.syncCull({ since: new Date(Date.now() - 60000), refresh: true });
+  assert('syncCull 按水位删除', { total: purge.total, indexed: purge.indexed, deleted: purge.deleted, failed: purge.failed },
     { total: 1, indexed: 0, deleted: 1, failed: 0 });
   assert('删除后 total = 3', (await ct.search({ }, CTX as any)).total, 3);
   await ct.syncFind({ name: 'inc one' }, { refresh: 'wait_for' });   // 条件同步补回
   assert('补回后 total = 4', (await ct.search({ }, CTX as any)).total, 4);
 
-  assert('syncPurge 不传 since 抛 PARAMS_INVALID', await errnoOf(() => ct.syncPurge({ refresh: true } as any)), -32602);
+  assert('syncCull 不传 since 抛 PARAMS_INVALID', await errnoOf(() => ct.syncCull({ refresh: true } as any)), -32602);
 
   // 全量重建：改字段类型 / 分词只能走这条（有空窗）
   await ct.initIndex();

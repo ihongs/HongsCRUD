@@ -9,7 +9,7 @@
 
 import type { Schema, Model } from 'mongoose';
 import type { Client } from '@elastic/elasticsearch';
-import type { SyncOpts, SyncFindOpts, SyncPurgeOpts, SyncStat, EsOpts, EsLeaf, EsCond } from './types';
+import type { SyncOpts, SyncFindOpts, SyncCullOpts, SyncStat, EsOpts, EsLeaf, EsCond } from './types';
 import type { FindSpec, SortSpec, ColsSpec, SearchParams, SearchResult, CountsParams, CountsResult, Context } from '../types';
 import { Cradle, CrudError, CrudErrno } from '../index';
 
@@ -73,18 +73,18 @@ export class Chaser extends Cradle {
     }
 
     // 推导 mapping 与字段清单（叶子含子文档点号路径，容器按声明取 nested / object）
-    const leaves    : EsLeaf[] = [];
-    const containers = new Map<string, boolean>();
-    walkSchema(schema, '', true, { skipRoot, esAnalyzer: this._esOpts.esAnalyzer }, { leaves, containers });
+    const leaves: EsLeaf[] = [];
+    const nestes = new Map<string, boolean>();
+    walkSchema(schema, '', true, { skipRoot, esAnalyzer: this._esOpts.esAnalyzer }, { leaves, nestes });
 
-    this._mapping    = assembleMapping(leaves, containers, this._esOpts);
+    this._mapping    = makeMapping(leaves, nestes, this._esOpts);
     this._syncable   = new Set(leaves.map(l => l.name));
     this._textable   = new Set(leaves.filter(l => l.textable ).map(l => l.name));
     this._countable  = new Set(leaves.filter(l => l.countable).map(l => l.name));
     this._leaves     = new Map(leaves.map(l => [l.name, l] as [string, EsLeaf]));
     
-    this._nestedPaths = new Set<string>( );
-    for (const [ck, isNest] of containers) {
+    this._nestedPaths = new Set<string>();
+    for (const [ck, isNest] of nestes) {
       if (isNest && leaves.some(l => l.name.startsWith(ck + '.'))) {
         this._nestedPaths.add(ck);
       }
@@ -220,7 +220,7 @@ export class Chaser extends Cradle {
     const have = (await es.indices.getMapping({ index }))?.[index]?.mappings?.properties ?? {};
     const body: Record<string, any> = {};
     const added: string[] = [];
-    diffMapping(this.getMapping().properties, have, '', body, added);
+    diffMapping(this.getMapping().properties, have, body, '', added);
 
     if (Object.keys(body).length) {
       await es.indices.putMapping({ index, properties: body });
@@ -794,17 +794,13 @@ export class Chaser extends Cradle {
 
   /**
    * 按条件游标遍历 mongo（不排除伪删除，+isDeleted 取回标记），攒批交给 syncDocs；
-   * 不传 find（或空条件）即全量：先记水位 T，结束后无失败且 purge !== false 则补一次
-   * syncPurge({ since: T })，一趟完成补齐与清理且无空窗
+   * 全量同步（不传或空 find）结束后无失败则补一次 syncCull({ since })，一趟完成补齐与清理且无空窗
    */
   async syncFind(find?: Record<string, any>, opts?: SyncFindOpts): Promise<SyncStat> {
-    const full = !find || !Object.keys(find).length;
-    const mark = full ? new Date() : undefined;   // 全量水位：取开始前时刻，天然带安全余量
-
+    const d = this.getSoftDelete();
     const q = this.getModel().find(find ?? {});
-    const sd = this.getSoftDelete();
-    if (sd) q.select('+' + (sd.isDeleted || 'isDeleted'));   // 伪删标记通常 select: false
-    for (const f of this._selectFalse) q.select('+' + f);    // 可同步字段须取全，见 5.2
+    if (d) q.select('+' + (d.isDeleted || 'isDeleted')); // 伪删标记通常 select: false
+    for(const f of this._selectFalse) q.select('+' + f); // 可同步字段须取全，见 5.2
 
     const stat: SyncStat = { total: 0, indexed: 0, deleted: 0, failed: 0, errors: [] };
     const buf : any[] = [];
@@ -819,6 +815,7 @@ export class Chaser extends Cradle {
     };
 
     // 游标逐个取、攒批提交 bulk（默认 1000）：内存平稳，且不似 skip 分页会漏记录，见 5.2
+    const since = new Date();
     const batch = opts?.batch && opts.batch > 0 ? opts.batch : 1000;
     for await (const doc of q.cursor()) {
       stat.total ++;
@@ -827,11 +824,12 @@ export class Chaser extends Cradle {
     }
     await flush();
 
-    // 失败的文档同步戳未刷新，purge 会误删，故失败数不为 0 时跳过，见 5.2
-    if (full && opts?.purge !== false && !stat.failed) {
-      const p = await this.syncPurge({ since: mark as Date, refresh: opts?.refresh });
+    // 全量更新无失败
+    if (!stat.failed && (!find || isEmptyObj(find))) {
+      const p = await this.syncCull({ since, refresh: opts?.refresh });
       stat.deleted += p.deleted;
     }
+
     return stat;
   }
 
@@ -839,10 +837,10 @@ export class Chaser extends Cradle {
    * 删除同步戳早于水位的孤立记录（mongo 已不存在的），一条 delete_by_query 完成，
    * 含同步戳不存在的文档；since 必传，不给默认值以免误用，见 5.2
    */
-  async syncPurge(opts: SyncPurgeOpts): Promise<SyncStat> {
+  async syncCull(opts: SyncCullOpts): Promise<SyncStat> {
     if (!opts?.since) {
       throw new CrudError(
-        '"since" is required for syncPurge.',
+        '"since" is required for syncCull.',
         CrudErrno.PARAMS_INVALID,
         { },
       );
@@ -932,11 +930,71 @@ export class Chaser extends Cradle {
 /* ---------- Helpers：mapping 推导 ---------- */
 
 /**
+ * 递归收集叶子字段与容器声明
+ * prefix 为所属点号前缀；isRoot 时按 skipRoot 排除软删除标记
+ * 内联子对象以点号路径直接出现在 paths，容器（Embedded / 数组子文档）经 path.schema 递归
+ */
+function walkSchema(
+  schema    : Schema,
+  prefix    : string,
+  isRoot    : boolean,
+  wo        : { skipRoot: Set<string>; esAnalyzer?: string },
+  out       : { leaves: EsLeaf[]; nestes: Map<string, boolean> },
+): void {
+  for (const [name, path] of Object.entries(schema.paths)) {
+    if (name.startsWith('__')) continue;                 // 系统内部
+    if (name.includes ('$*')) continue;                  // Map 的值类型路径
+    if (name === '_id' || name.endsWith('._id')) continue; // 元数据：根级作 ES _id，子级不入索引
+    if (isRoot && wo.skipRoot.has(name)) continue;       // 软删除标记不入索引
+
+    const opts = (path as any).options || {};
+
+    // 配置矛盾：countable 却 syncable: false
+    if (opts.countable && opts.syncable === false) {
+      throw new CrudError(
+        `Field "${name}" is countable but syncable: false, remove one of them.`,
+        CrudErrno.INTERNEL_ERROR,
+        { field: name },
+      );
+    }
+    if (opts.syncable === false) continue;                // 叶子或整棵子树不进索引
+
+    const full = prefix + name;
+    const inst = (path as any).instance;
+
+    if (inst === 'Embedded') {
+      // 单个子文档：object，递归
+      walkSchema((path as any).schema, full + '.', false, wo, out);
+      out.nestes.set(full, false);
+      continue;
+    }
+
+    if (inst === 'Array') {
+      const sub = (path as any).schema;
+      if (sub) {
+        // 数组子文档：默认扁平 object，标 nested: true 才保留元素关联，见 1.3
+        walkSchema(sub, full + '.', false, wo, out);
+        out.nestes.set(full, opts.nested === true);
+        continue;
+      }
+      // 标量数组：按元素类型推导（ES 数组与标量同 mapping）
+      const cast = (path as any).caster || (path as any).$embeddedSchemaType;
+      const leaf = cast ? getLeaf(full, opts, cast.instance, wo.esAnalyzer) : undefined;
+      if (leaf) out.leaves.push(leaf);
+      continue;
+    }
+
+    const leaf = getLeaf(full, opts, inst, wo.esAnalyzer);
+    if (leaf) out.leaves.push(leaf);
+  }
+}
+
+/**
  * 单个叶子字段的 ES 类型推导
  * opts 为字段定义项（数组取数组定义项），instance 为本体 / 数组元素的 mongoose 类型名
  * 不可映射的类型（Map / Mixed / Buffer 等）返回 undefined
  */
-function deriveLeaf(
+function getLeaf(
   name    : string,
   opts    : Record<string, any>,
   instance: string,
@@ -973,98 +1031,15 @@ function deriveLeaf(
   };
 }
 
-/** 叶子字段的 ES mapping（对照表见 1.2） */
-function leafMapping(leaf: EsLeaf): Record<string, any> {
-  switch (leaf.kind) {
-    case 'text':
-      // textable 且 termsize: 0：无 keyword 视角，主字段直接 text（只搜不精确匹配，等值 / 排序 / 聚合不可用）
-      return { type: 'text', ...(leaf.analyzer ? { analyzer: leaf.analyzer } : {}) };
-    case 'keyword': {
-      // String / ObjectId 主类型 keyword（term 视角：等值 / 排序 / 聚合）；textable 附 .text 子字段（分词
-      // 视角：wd / $search）；termsize 控制 ignore_above（见 1.1）：默认 256（超过的长串不进 keyword，
-      // 等值匹配本就不可靠），-1 不限，仅 textable 生效
-      const size = leaf.termsize ?? 256;
-      return {
-        type: 'keyword',
-        ...(size >= 0 ? { ignore_above: size } : {}),
-        ...(leaf.textable ? { fields: { text: { type: 'text', ...(leaf.analyzer ? { analyzer: leaf.analyzer } : {}) } } } : {}),
-      };
-    }
-    case 'double' : return { type: 'double' };
-    case 'boolean': return { type: 'boolean' };
-    case 'date'   : return { type: 'date' };
-  }
-}
-
-/**
- * 递归收集叶子字段与容器声明
- * prefix 为所属点号前缀；isRoot 时按 skipRoot 排除软删除标记
- * 内联子对象以点号路径直接出现在 paths，容器（Embedded / 数组子文档）经 path.schema 递归
- */
-function walkSchema(
-  schema    : Schema,
-  prefix    : string,
-  isRoot    : boolean,
-  wo        : { skipRoot: Set<string>; esAnalyzer?: string },
-  out       : { leaves: EsLeaf[]; containers: Map<string, boolean> },
-): void {
-  for (const [name, path] of Object.entries(schema.paths)) {
-    if (name.startsWith('__')) continue;                 // 系统内部
-    if (name.includes ('$*')) continue;                  // Map 的值类型路径
-    if (name === '_id' || name.endsWith('._id')) continue; // 元数据：根级作 ES _id，子级不入索引
-    if (isRoot && wo.skipRoot.has(name)) continue;       // 软删除标记不入索引
-
-    const opts = (path as any).options || {};
-
-    // 配置矛盾：countable 却 syncable: false
-    if (opts.countable && opts.syncable === false) {
-      throw new CrudError(
-        `Field "${name}" is countable but syncable: false, remove one of them.`,
-        CrudErrno.INTERNEL_ERROR,
-        { field: name },
-      );
-    }
-    if (opts.syncable === false) continue;                // 叶子或整棵子树不进索引
-
-    const full = prefix + name;
-    const inst = (path as any).instance;
-
-    if (inst === 'Embedded') {
-      // 单个子文档：object，递归
-      walkSchema((path as any).schema, full + '.', false, wo, out);
-      out.containers.set(full, false);
-      continue;
-    }
-
-    if (inst === 'Array') {
-      const sub = (path as any).schema;
-      if (sub) {
-        // 数组子文档：默认扁平 object，标 nested: true 才保留元素关联，见 1.3
-        walkSchema(sub, full + '.', false, wo, out);
-        out.containers.set(full, opts.nested === true);
-        continue;
-      }
-      // 标量数组：按元素类型推导（ES 数组与标量同 mapping）
-      const cast = (path as any).caster || (path as any).$embeddedSchemaType;
-      const leaf = cast ? deriveLeaf(full, opts, cast.instance, wo.esAnalyzer) : undefined;
-      if (leaf) out.leaves.push(leaf);
-      continue;
-    }
-
-    const leaf = deriveLeaf(full, opts, inst, wo.esAnalyzer);
-    if (leaf) out.leaves.push(leaf);
-  }
-}
-
 /**
  * 由叶子清单装配 mapping
  * 未被任何叶子引用的容器不出现（其子树必已全部排除）；
  * 合并字段与同步戳为组件内部字段，随 mapping 显式定义，见 1.2
  */
-function assembleMapping(
-  leaves    : EsLeaf[],
-  containers: Map<string, boolean>,
-  esOpts    : EsOpts,
+function makeMapping(
+  leaves: EsLeaf[],
+  nestes: Map<string, boolean>,
+  esOpts: EsOpts,
 ): Record<string, any> {
   const properties: Record<string, any> = {};
 
@@ -1076,7 +1051,7 @@ function assembleMapping(
       const ck = keys.slice(0, i + 1).join('.');
       if (!host[keys[i]]) {
         host[keys[i]] = {
-          type    : containers.get(ck) === true ? 'nested' : 'object',
+          type    : nestes.get(ck) === true ? 'nested' : 'object',
           dynamic : 'strict',
           properties: {},
         };
@@ -1101,6 +1076,29 @@ function assembleMapping(
   };
 }
 
+/** 叶子字段的 ES mapping（对照表见 1.2） */
+function leafMapping(leaf: EsLeaf): Record<string, any> {
+  switch (leaf.kind) {
+    case 'text':
+      // textable 且 termsize: 0：无 keyword 视角，主字段直接 text（只搜不精确匹配，等值 / 排序 / 聚合不可用）
+      return { type: 'text', ...(leaf.analyzer ? { analyzer: leaf.analyzer } : {}) };
+    case 'keyword': {
+      // String / ObjectId 主类型 keyword（term 视角：等值 / 排序 / 聚合）；textable 附 .text 子字段（分词
+      // 视角：wd / $search）；termsize 控制 ignore_above（见 1.1）：默认 256（超过的长串不进 keyword，
+      // 等值匹配本就不可靠），-1 不限，仅 textable 生效
+      const size = leaf.termsize ?? 256;
+      return {
+        type: 'keyword',
+        ...(size >= 0 ? { ignore_above: size } : {}),
+        ...(leaf.textable ? { fields: { text: { type: 'text', ...(leaf.analyzer ? { analyzer: leaf.analyzer } : {}) } } } : {}),
+      };
+    }
+    case 'double' : return { type: 'double' };
+    case 'boolean': return { type: 'boolean' };
+    case 'date'   : return { type: 'date' };
+  }
+}
+
 /**
  * 按点号路径取值，数组感知（跨数组子文档取叶子时逐元素下钻，得扁平数组）
  * mongoose 文档 / 子文档走 get，普通对象下标取值
@@ -1110,16 +1108,16 @@ function getDocPath(doc: any, name: string): any {
   for (const k of name.split('.')) {
     if (cur === undefined || cur === null) return cur;
     if (Array.isArray(cur)) {
-      cur = cur.map(el => docVal(el, k));
+      cur = cur.map(el => getDocVal(el, k));
       continue;
     }
-    cur = docVal(cur, k);
+    cur = getDocVal(cur, k);
   }
   return cur;
 }
 
 /** 取单段字段：mongoose 文档 / 子文档走 get，普通对象下标取值 */
-function docVal(val: any, name: string): any {
+function getDocVal(val: any, name: string): any {
   if (val === undefined || val === null) return val;
   if (typeof val.get === 'function') return val.get(name);
   return val[name];
@@ -1139,7 +1137,7 @@ function pickByMapping(
   const out: Record<string, any> = {};
   for (const [name, sub] of Object.entries(node.properties as Record<string, any>)) {
     if (skip?.has(name)) continue;
-    const v = docVal(val, name);
+    const v = getDocVal(val, name);
     if (v === undefined) continue;
     if (sub.properties) {
       const picked = Array.isArray(v)
@@ -1162,8 +1160,8 @@ function pickByMapping(
 function diffMapping(
   want  : Record<string, any>,
   have  : Record<string, any>,
-  prefix: string,
   body  : Record<string, any>,
+  prefix: string,
   added : string[],
 ): void {
   for (const [name, wm] of Object.entries(want)) {
@@ -1171,11 +1169,11 @@ function diffMapping(
     if (!hm) {
       // 整棵新子树：原样推（含 dynamic: 'strict' 与全部子字段）
       body[name] = wm;
-      collectLeaves(wm, prefix + name, added);
+      deepMapping(wm, prefix + name, added);
     } else if (wm.properties && hm.properties) {
       // 两侧同为容器：下钻，只带走新增子字段
       const sub: Record<string, any> = { type: wm.type, properties: {} };
-      diffMapping(wm.properties, hm.properties, prefix + name + '.', sub.properties, added);
+      diffMapping(wm.properties, hm.properties, sub.properties, prefix + name + '.', added);
       if (Object.keys(sub.properties).length) body[name] = sub;
     }
     // 已存在的叶子（含两侧结构不一致的）一律不传，避免触发类型冲突报错
@@ -1183,13 +1181,17 @@ function diffMapping(
 }
 
 /** 收集整棵子树内的叶子字段名（点号路径），即 pushMapping 的返回内容 */
-function collectLeaves(node: Record<string, any>, prefix: string, out: string[]): void {
+function deepMapping(
+  node  : Record<string, any>,
+  prefix: string,
+  added : string[]
+): void {
   if (node.properties) {
     for (const [name, sub] of Object.entries(node.properties as Record<string, any>)) {
-      collectLeaves(sub, prefix + '.' + name, out);
+      deepMapping(sub, prefix + '.' + name, added);
     }
   } else {
-    out.push(prefix);
+    added.push(prefix);
   }
 }
 
