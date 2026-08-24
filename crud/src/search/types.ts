@@ -81,5 +81,5 @@ export interface EsLeaf {
 /** 翻译的中间态：完整 ES 子句；叶子字段条件另带所属 nested path 链，供 and 语境归组 */
 export interface EsCond {
   clause: Record<string, any>;
-  chain ?: string[];
+  chain?: string[];
 }

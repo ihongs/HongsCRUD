@@ -1,8 +1,8 @@
 # hongs-crud
 
-一个基于 Mongoose Schema 的轻量 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，并内置 `crud / func / role` 三大注册器用于权限管控与统一调度。各方法可供 json-rpc 和 mcp 调用，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理等。
+基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
 
-另含可选的 ES 检索组件 `Chaser`（从 `hongs-crud/search` 引入），把 `search` / `counts` 的查询执行搬到 Elasticsearch，并在写入后自动同步索引，见第 4 节。
+另含可选的检索组件 `Chaser`（从 `hongs-crud/search` 引入），把 `search` / `counts` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的筛选及搜索能力，并在写入后自动同步索引，见第 4 节。
 
 源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
