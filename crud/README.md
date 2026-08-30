@@ -2,7 +2,7 @@
 
 基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
 
-另含可选的检索组件 `Chaser`（从 `hongs-crud/search` 引入），把 `search` / `counts` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的筛选及搜索能力，并在写入后自动同步索引，见第 4 节。
+另含可选的检索组件 `Chaser`（从 `hongs-crud/search` 引入），把 `search` / `counts` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 4 节。
 
 源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
@@ -336,10 +336,6 @@ mongoose 选项到 JSON Schema 的映射：
       { "value": "active", "title": "启用" },
       { "value": "frozen", "title": "冻结" },
       { "value": "closed", "title": "关闭" }
-    ],
-    "userRole": [
-      { "value": "admin", "title": "管理员" },
-      { "value": "user" , "title": "普通用户" }
     ]
   }
 }
