@@ -18,7 +18,7 @@ npm install hongs-crud
 
 `hongs-crud` 围绕标准 Mongoose `Schema` 展开，能力通过两种扩展叠加获得：
 
-- **字段内部自定义选项**：`title` / `description` / `assign` / `countable` / `reference` 等。
+- **字段内部自定义选项**：`title` / `description` / `writable` / `readable` / `countable` / `reference` 等。
 - **扩展参数自定义选项**：`title` / `description` / `collection` / `references` / `softDelete` / `limitDef` / `limitMax` 等。
 
 下面是一个完整、简单的例子，包含所有扩展点：
@@ -52,11 +52,12 @@ const userSchema = new Schema(
     password: {
       type: String,
       select: false,                                 // → writeOnly，可写不可读
+      readable: false,                               // → writeOnly，同 select（程序层面）
       required: true,
     },
     passsalt: {
       type: String,
-      assign: false,                                 // → readOnly，外部不可赋值
+      writable: false,                               // → readOnly，外部不可写（程序层面）
     },
     age: {
       type: Number,
@@ -106,7 +107,8 @@ mongoose 扩展：
 |---|---|---|
 | `title` | Schema 扩展、字段内 | 模型标题、字段标题，透出为 JSON Schema 的 `title` |
 | `description` | Schema 扩展、字段内 | 模型说明、字段说明，透出为 JSON Schema 的 `description` |
-| `assign` | 字段内 | 写 `assign: false` 表示外部不可赋值，透出为 `readOnly` |
+| `writable` | 字段内 | 写 `writable: false` 表示外部不可写，透出为 `readOnly` |
+| `readable` | 字段内 | 写 `readable: false` 表示预留的禁读声明，透出为 `writeOnly`；与 `writable` 同属程序层面预留的读写符号，`select` 则为 mongoose 原生投影控制 |
 | `countable` | 字段内 | 写 `countable: true` 表示该字段可被 `counts()` 统计，透出为 `x-countable` |
 | `reference` | 字段内 | 声明该字段的选项数据来源，透出为 `x-reference`；无 `method` 时取 `references[items]`，有 `method` 时远程调用 |
 | `extra` | 字段内 | 任意附加信息，每个 key 加 `x-` 前缀后透出（如 `opt` → `x-opt`） |
@@ -132,8 +134,9 @@ mongoose 选项到 JSON Schema 的映射：
 | `minlength` / `maxlength` | `minLength`/`maxLength`、`minItems`/`maxItems`、`minProperties`/`maxProperties`（按 type） |
 | `match` | `pattern` |
 | `select: false` | `writeOnly` |
-| `assign: false` | `readOnly` |
-| `select: false` + `assign: false` | 整个字段跳过，不透出 |
+| `readable: false` | `writeOnly` |
+| `writable: false` | `readOnly` |
+| `select: false` + `writable: false` | 整个字段跳过，不透出 |
 | `createdAt` / `updatedAt` | `readOnly`（ timestamps 自动维护） |
 | `immutable: true` | `x-immutable` |
 | `countable: true` | `x-countable` |

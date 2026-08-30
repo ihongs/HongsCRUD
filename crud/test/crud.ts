@@ -16,6 +16,7 @@ const schema = new mongoose.Schema({
   age   : { type: Number, min: 0, max: 150 },
   tags  : { type: [String] },
   secret: { type: String, select: false },
+  code  : { type: String, readable: false },
 }, {
   collection: COLL_NAME,
   softDelete: true,   // 启用软删除
@@ -102,6 +103,7 @@ async function main(): Promise<void> {
   assertOk('schema.age minimum/maximum', s.properties.age.minimum === 0 && s.properties.age.maximum === 150);
   assertOk('schema.tags 为 array of string', s.properties.tags.type === 'array' && s.properties.tags.items.type === 'string');
   assertOk('schema.secret 为 writeOnly', s.properties.secret.writeOnly === true);
+  assertOk('schema.code 为 writeOnly（readable: false）', s.properties.code.writeOnly === true);
   assertOk('schema.status 含 x-reference', !!s.properties.status['x-reference']);
   assertOk('schema 含 x-references.status', !!s['x-references'] && !!s['x-references'].status);
   const sCols = await callSchema({ cols: { name: 1 } });

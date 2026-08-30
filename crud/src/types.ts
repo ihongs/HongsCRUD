@@ -119,7 +119,8 @@ export interface SchemaParams {
  *     select: false, // 不返回该字段，对应 writeOnly
  *     immutable: true, // 不可变字段，对应 x-immutable
  *     // 下为扩展项
- *     assign: false, // 外部不可赋值，对应 readOnly
+ *     writable: false, // 外部不可写，对应 readOnly
+ *     readable: false, // 外部不可读，对应 writeOnly；与 writable 同属程序层面预留的读写符号
  *     countable: true, // 可统计字段，对应 x-countable
  *     reference: { // 对应 x-reference，无 method 表示取 references 中数据
  *       method: 'field1', // 远程请求方法名
@@ -221,9 +222,9 @@ export interface SchemaNode {
   /** type: 'object'，properties 中必填的字段名列表，对应字段内 required: true */
   required?: string[];
 
-  /** 对应 assign: false（系统字段，可读不可写） */
+  /** 对应 writable: false（系统字段，可读不可写） */
   readOnly?: boolean;
-  /** 对应 select: false（秘密字段，可写不可读） */
+  /** 对应 select: false 或 readable: false（秘密字段，可写不可读） */
   writeOnly?: boolean;
 
   /** 创建后不可修改，对应字段内 immutable: true */

@@ -57,6 +57,18 @@ export class Mine extends User implements Crud {
     params = { ...(params || {}) };
     params.id = new ObjectId(uid);
     params.find = undefined;
+    // 强制不返回 password / passsalt：cols 未传或黑名单（含 0）模式时追加排除；
+    // 白名单（全 1）模式下从清单中剔除（点名也要不到），剔除后为空则退化为黑名单
+    const cols: Record<string, any> = { ...(params.cols || {}) };
+    if (!params.cols || Object.values(params.cols).includes(0)) {
+      cols.password = 0;
+      cols.passsalt = 0;
+    } else {
+      delete cols.password;
+      delete cols.passsalt;
+      if (!Object.keys(cols).length) { cols.password = 0; cols.passsalt = 0; }
+    }
+    params.cols = cols;
     return super.search(params as any, ctx);
   }
 
@@ -67,6 +79,8 @@ export class Mine extends User implements Crud {
     params = { ...(params || {}) };
     params.id = new ObjectId(uid);
     params.find = undefined;
+    params.data = { ...(params.data || {}) };
+    delete params.data.roles;   // 禁止用户修改自己的 roles，一律移除（管理接口 user.update 不受影响）
     return super.update(params as any, ctx);
   }
 }

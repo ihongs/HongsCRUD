@@ -728,7 +728,7 @@ export function buildObjectNode(schema: Schema, cols?: ColsSpec, refs?: Set<stri
     const opts = (path as any).options || {};
 
     // 既不可读又不可写的，无需透出
-    if (opts.select === false && opts.assign === false) continue;
+    if ((opts.select === false || opts.readable === false) && opts.writable === false) continue;
 
     // cols 仅过滤顶层字段
     const top  = name.split('.')[0];
@@ -804,8 +804,10 @@ function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
     node.pattern = m instanceof RegExp ? m.source : String(m);
   }
 
+  // select / readable / writable 为程序层面的读写预留符号：select 走 mongoose 投影，readable / writable 仅透出 JSON Schema 声明
   if (opts.select    === false) node.writeOnly      = true;
-  if (opts.assign    === false) node.readOnly       = true;
+  if (opts.readable  === false) node.writeOnly      = true;
+  if (opts.writable  === false) node.readOnly       = true;
   if (opts.immutable === true ) node['x-immutable'] = true;
   if (opts.countable === true ) node['x-countable'] = true;
 
@@ -911,7 +913,7 @@ mongoose.plugin(function(schema: Schema): void {
   }
   if (sd) {
     const sdObj = sd as SoftDel;
-    schema.add({ [sdObj.isDeleted || 'isDeleted']: { type: Boolean, assign: false, select: false, default: sdObj.default !== undefined ? sdObj.default : false, index: true } });
-    schema.add({ [sdObj.deletedAt || 'deletedAt']: { type: Date   , assign: false, select: false, default: null } });
+    schema.add({ [sdObj.isDeleted || 'isDeleted']: { type: Boolean, writable: false, select: false, default: sdObj.default !== undefined ? sdObj.default : false, index: true } });
+    schema.add({ [sdObj.deletedAt || 'deletedAt']: { type: Date   , writable: false, select: false, default: null } });
   }
 });

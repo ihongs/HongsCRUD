@@ -7,8 +7,8 @@ import { Cradle } from 'hongs-crud';
 const userSchema = new Schema(
   {
     username:  { type: String, unique: true },
-    password:  { type: String, select: false },
-    passsalt:  { type: String, select: false, assign: false },
+    password:  { type: String },
+    passsalt:  { type: String },
     name:      { type: String },
     avatar:    { type: String },
     email:     { type: String, index: true },
@@ -21,16 +21,6 @@ const userSchema = new Schema(
     timestamps: true,
   },
 );
-
-/**
- * 使用随机盐 + PBKDF2 对明文密码加密。
- * 返回 { password, passsalt } 对象，可直接合并到写入 data。
- */
-function hashPassword(plain: string): { password: string; passsalt: string } {
-  const passsalt = randomBytes(16).toString('hex');
-  const password = pbkdf2Sync(plain, passsalt, 100_000, 64, 'sha512').toString('hex');
-  return { password, passsalt };
-}
 
 export class User extends Cradle {
   constructor() {
@@ -80,6 +70,16 @@ export class UserApiKey extends Cradle {
 export const userApiKey = new UserApiKey();
 
 /* ---------- Helpers ---------- */
+
+/**
+ * 使用随机盐 + PBKDF2 对明文密码加密。
+ * 返回 { password, passsalt } 对象，可直接合并到写入 data。
+ */
+function hashPassword(plain: string): { password: string; passsalt: string } {
+  const passsalt = randomBytes(16).toString('hex');
+  const password = pbkdf2Sync(plain, passsalt, 100_000, 64, 'sha512').toString('hex');
+  return { password, passsalt };
+}
 
 /**
  * 生成一个唯一的 API Key（sk）。
