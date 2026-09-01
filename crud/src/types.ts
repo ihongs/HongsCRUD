@@ -174,7 +174,7 @@ export interface SchemaResult extends SchemaNode {
   /** 字段集合，键为字段名 */
   properties: Record<string, SchemaNode>;
   /** 数据列表，对应 Schema 扩展 references，仅根节点有 */
-  'x-references'?: Record<string, Record<string, any>[]>;
+  'x-references'?: Record<string, Record<any, any>[]>;
   [key: string]: any;
 }
 

@@ -593,7 +593,7 @@ export class Cradle implements Crud {
 
     // x-references：仅输出被 references 引用到的列表
     const refData = (schema as any).get('references') || {};
-    let refdata: Record<string, Record<string, any>[]> = {};
+    let   refdata : Record<string, Record<any, any>[]> = {};
     if (cols !== undefined) {
       for (const name of refs) {
         if (! refdata[name] && refData[name]) refdata[name] = refData[name];
