@@ -6,7 +6,7 @@ export type FindMode = 'only-items' | 'only-total' | 'has-more';
 export type FindSpec = Record<string, any>;
 export type SortSpec = Record<string, 1 | -1>;
 export type ColsSpec = Record<string, 0 |  1>;
-export type RefsSpec = Record<string, Record<any, any>>;
+export type RefsSpec = Record<string, Record<string, any>[]>;
 
 export interface CreateParams {
   data: Record<string, any>;
@@ -135,11 +135,9 @@ export interface SchemaParams {
  *     reference: { // 引用关系
  *       method: 'method', // 远程请求方法名
  *       params: { find }, // 远程请求参数集
+ *       items: 'items', // 返回列表键，默认 items
  *       alias: 'ref01', // 关联项别名，对应 refs.key
- *       items: 'items', // 返回列表键，默认为 items
- *       value: '_id' , // 取值字段名，默认为 _id
- *       title: 'name', // 标题字段名，默认为 name
- *       description: '关联说明', // 对应 x-description
+ *       description: '关联说明',
  *     },
  *     title: '字段1', // 对应 x-title
  *     description: '字段1说明', // 对应 x-description
@@ -251,8 +249,7 @@ export interface SchemaNode {
  *   },
  *   "alias": "ref01",
  *   "items": "items",
- *   "value": "_id",
- *   "title": "name"
+ *   "description": "关联项说明"
  * }
  * ```
  */
@@ -261,14 +258,16 @@ export interface DataRef {
   method?: string;
   /** json-rpc 附加参数 */
   params?: Record<string, any>;
-  /** 关联项别名，对应 refs.key */
+  /** 关联项别名，对应 refs.key，默认同字段名 */
   alias?: string;
   /** 返回列表键，默认 items */
   items?: string;
-  /** 取值字段名，默认 _id  */
-  value?: string;
-  /** 显示字段名，默认 name */
-  title?: string;
+  /** 取值字段名，默认 _id */
+  idField?: string;
+  /** 查询参数名，默认  id */
+  idParam?: string;
+  /** 关联说明  */
+  description?: string;
 }
 
 export interface SoftDel {
