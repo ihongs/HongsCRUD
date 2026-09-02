@@ -660,7 +660,7 @@ export function isPermitted(auth: string, roles: string[] | Set<string>): boolea
  * 取数据列表中的取值集合
  * 便于给 mongoose 的 enum 赋值
  */
-export function getValues(items: Record<string, any>[], valueField: string = 'value'): string[] {
+export function getValues(items: Record<string, any>[], valueField: string): string[] {
   return items.map(item => String(item[valueField]));
 }
 

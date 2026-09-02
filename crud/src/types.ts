@@ -4,8 +4,9 @@ import type { Document } from 'mongoose';
 
 export type FindMode = 'only-items' | 'only-total' | 'has-more';
 export type FindSpec = Record<string, any>;
-export type ColsSpec = Record<string, 0 |  1>;
 export type SortSpec = Record<string, 1 | -1>;
+export type ColsSpec = Record<string, 0 |  1>;
+export type RefsSpec = Record<string, Record<any, any>>;
 
 export interface CreateParams {
   data: Record<string, any>;
@@ -50,8 +51,9 @@ export interface SearchParams {
   wd?: string;
   mode?: FindMode;
   find?: FindSpec;
-  cols?: ColsSpec;
   sort?: SortSpec;
+  cols?: ColsSpec;
+  refs?: boolean | string[];
   start?: number;
   limit?: number;
   [key: string]: any;
@@ -61,6 +63,7 @@ export interface SearchResult {
   items?: Document[];
   total?: number;
   more?: boolean;
+  refs?: RefsSpec;
   [key: string]: any;
 }
 
@@ -69,6 +72,7 @@ export interface CountsParams {
   wd?: string;
   find?: FindSpec;
   cols?: ColsSpec;
+  refs?: boolean | string[];
   sels?: Record<string, any[]>; // 已选值 {field: [value1, value2, ...]}
   top?: number | Record<string, number>; // 最大数量 {field: 10}
   [key: string]: any;
@@ -77,6 +81,7 @@ export interface CountsParams {
 export interface CountsResult {
   counts: Record<string, Record<any, number>>; // 统计量 {field: {value1: 10, value2: 20, ...}}
   total : number; // 总数，范围：find + sels
+  refs? : RefsSpec; // 关联项数据
   [key: string]: any;
 }
 
@@ -122,15 +127,19 @@ export interface SchemaParams {
  *     writable: false, // 外部不可写，对应 readOnly
  *     readable: false, // 外部不可读，对应 writeOnly；与 writable 同属程序层面预留的读写符号
  *     countable: true, // 可统计字段，对应 x-countable
- *     reference: { // 对应 x-reference，无 method 表示取 references 中数据
- *       method: 'field1', // 远程请求方法名
- *       params: { find }, // 远程请求参数集
- *       items: 'items', // 引用数据键或请求返回的列表键，默认为 items
- *       value: 'value', // 取值字段名，默认为 value
- *       title: 'title', // 标题字段名，默认为 title
+ *     enum: ['value1', 'value2'], // 枚举值
+ *     enumTags: { // 枚举标签
+ *       value1: '选项1',
+ *       value2: '选项2',
  *     },
- *     extra: { // 对应 x-opt，不确定的公开扩展选项
- *       opt: 'value',
+ *     reference: { // 引用关系
+ *       method: 'method', // 远程请求方法名
+ *       params: { find }, // 远程请求参数集
+ *       alias: 'ref01', // 关联项别名，对应 refs.key
+ *       items: 'items', // 返回列表键，默认为 items
+ *       value: '_id' , // 取值字段名，默认为 _id
+ *       title: 'name', // 标题字段名，默认为 name
+ *       description: '关联说明', // 对应 x-description
  *     },
  *     title: '字段1', // 对应 x-title
  *     description: '字段1说明', // 对应 x-description
@@ -144,19 +153,12 @@ export interface SchemaParams {
  *     deletedAt: 'deletedAt', // 删除时间字段，可用 false 取消
  *     deleted: true, // 软删除值
  *   },
- *   references: {
- *     field1: [
- *       { value: 'value1', title: '选项1' },
- *       { value: 'value2', title: '选项2' },
- * *   ]
- *   },
  *   title: '模型标题',
  *   description: '模型说明',
  * })
  * ```
  * 1. 根节点：对应 mongoose 模型的根节点，包含模型标题、说明、必填字段、字段集合、数据列表等。
  * 2. 字段节点：对应 mongoose 模型的字段节点，包含字段标题、说明、默认值、正则、最小最大值等。
- * 3. 数据列表：对应 mongoose 模型的 datalist 选项，用于枚举值。
  */
 
 /** schema() 的返回，本身即 JSON Schema 的根节点 */
@@ -173,8 +175,6 @@ export interface SchemaResult extends SchemaNode {
   required?: string[];
   /** 字段集合，键为字段名 */
   properties: Record<string, SchemaNode>;
-  /** 数据列表，对应 Schema 扩展 references，仅根节点有 */
-  'x-references'?: Record<string, Record<any, any>[]>;
   [key: string]: any;
 }
 
@@ -233,18 +233,14 @@ export interface SchemaNode {
   'x-countable'?: boolean;
   /** 关联的数据来源，对应字段内 reference: { items } */
   'x-reference'?: DataRef;
+  /** 枚举标签，对应字段内 enumTags */
+  'x-enum-tags'?: Record<string, string>;
 
   [key: string]: any;
 }
 
 /**
  * 字段的选项数据来源
- * 关联到 dataList:
- * ```json
- * {
- *   "items": "field1"
- * }
- * ```
  * 关联到 mod.func:
  * ```json
  * {
@@ -253,6 +249,7 @@ export interface SchemaNode {
  *     "find": { "boost": { $gt: 0 } },
  *     "cols": { "_id": 1, "name": 1 }, 
  *   },
+ *   "alias": "ref01",
  *   "items": "items",
  *   "value": "_id",
  *   "title": "name"
@@ -264,11 +261,13 @@ export interface DataRef {
   method?: string;
   /** json-rpc 附加参数 */
   params?: Record<string, any>;
-  /** dataList 的键或返回的列表键，默认 items */
+  /** 关联项别名，对应 refs.key */
+  alias?: string;
+  /** 返回列表键，默认 items */
   items?: string;
-  /** 取值字段名，默认 value */
+  /** 取值字段名，默认 _id  */
   value?: string;
-  /** 显示字段名，默认 title */
+  /** 显示字段名，默认 name */
   title?: string;
 }
 
