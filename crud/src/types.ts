@@ -2,11 +2,13 @@
 
 import type { Document } from 'mongoose';
 
-export type FindMode = 'only-items' | 'only-total' | 'has-more';
+export type FindMode = 'only-total' | 'only-list' | 'list-more';
 export type FindSpec = Record<string, any>;
+export type SelsSpec = Record<string, any[] >; // 已选 {field: [value1, value2, ...]}
 export type SortSpec = Record<string, 1 | -1>;
-export type ColsSpec = Record<string, 0 |  1>;
-export type RefsSpec = Record<string, Record<string, any>[]>;
+export type ColsSpec = Record<string, 1 | 0 >;
+export type RefsSpec = boolean | Record<string, 1 | 0 >; // true 全部或 {field: 1}，undefined/null 等同 false 不取
+export type TopsSpec = number  | Record<string, number>; // 取前 10 或 {field: 10}
 
 export interface CreateParams {
   data: Record<string, any>;
@@ -53,35 +55,35 @@ export interface SearchParams {
   find?: FindSpec;
   sort?: SortSpec;
   cols?: ColsSpec;
-  refs?: boolean | string[];
+  refs?: RefsSpec;
   start?: number;
   limit?: number;
   [key: string]: any;
 }
 
 export interface SearchResult {
-  items?: Document[];
+  list ?: Document[];
+  refs ?: Record<string, any[]>; // 关联数据 {field: [{_id: '123', name: '关联项1'}, {_id: '456', name: '关联项2'}]}
+  more ?: boolean;
   total?: number;
-  more?: boolean;
-  refs?: RefsSpec;
   [key: string]: any;
 }
 
-export interface CountsParams {
+export interface StatisParams {
   id?: string | string[];
   wd?: string;
   find?: FindSpec;
   cols?: ColsSpec;
-  refs?: boolean | string[];
-  sels?: Record<string, any[]>; // 已选值 {field: [value1, value2, ...]}
-  top?: number | Record<string, number>; // 最大数量 {field: 10}
+  sels?: SelsSpec;
+  tops?: TopsSpec;
+  refs?: RefsSpec;
   [key: string]: any;
 }
 
-export interface CountsResult {
-  counts: Record<string, Record<any, number>>; // 统计量 {field: {value1: 10, value2: 20, ...}}
-  total : number; // 总数，范围：find + sels
-  refs? : RefsSpec; // 关联项数据
+export interface StatisResult {
+  hits : Record<string, any[]>; // 统计数据 {field: [{value: 'value1', count: 20}, {value: 'value2', count: 10}]}
+  refs?: Record<string, any[]>; // 关联数据 {field: [{_id: '12', name: '关联项1'}, {_id: '34', name: '关联项2'}]}
+  total: number; // 总数，范围：find + sels
   [key: string]: any;
 }
 
@@ -119,7 +121,6 @@ export interface SchemaParams {
  *     minlength: 3, // 最小长度，对应 string 的 minLength，object 的 minProperties，array 的 minItems
  *     maxlength: 9, // 最大长度，对应 string 的 maxLength，object 的 maxProperties，array 的 maxItems
  *     match: /^[a-zA-Z0-9_]+$/, // 正则表达式，对应 pattern
- *     enum: ['value1', 'value2'], // 枚举值（无需体现在返回中，返回枚举数据总用 refData）
  *     required: true, // 必填字段，对应上级 object 的 required 数组
  *     select: false, // 不返回该字段，对应 writeOnly
  *     immutable: true, // 不可变字段，对应 x-immutable
@@ -135,9 +136,6 @@ export interface SchemaParams {
  *     reference: { // 引用关系
  *       method: 'method', // 远程请求方法名
  *       params: { find }, // 远程请求参数集
- *       items: 'items', // 返回列表键，默认 items
- *       alias: 'ref01', // 关联项别名，对应 refs.key
- *       description: '关联说明',
  *     },
  *     title: '字段1', // 对应 x-title
  *     description: '字段1说明', // 对应 x-description
@@ -230,44 +228,35 @@ export interface SchemaNode {
   /** 统计接口可计算，对应字段内 countable: true */
   'x-countable'?: boolean;
   /** 关联的数据来源，对应字段内 reference: { items } */
-  'x-reference'?: DataRef;
+  'x-reference'?: RefItem;
   /** 枚举标签，对应字段内 enumTags */
   'x-enum-tags'?: Record<string, string>;
 
   [key: string]: any;
 }
 
-/**
- * 字段的选项数据来源
- * 关联到 mod.func:
- * ```json
- * {
- *   "method": "model.search",
- *   "params": {
- *     "find": { "boost": { $gt: 0 } },
- *     "cols": { "_id": 1, "name": 1 }, 
- *   },
- *   "alias": "ref01",
- *   "items": "items",
- *   "description": "关联项说明"
- * }
- * ```
- */
-export interface DataRef {
+export interface RefItem {
   /** json-rpc 获取方法 */
   method?: string;
   /** json-rpc 附加参数 */
   params?: Record<string, any>;
-  /** 关联项别名，对应 refs.key，默认同字段名 */
-  alias?: string;
-  /** 返回列表键，默认 items */
-  items?: string;
-  /** 取值字段名，默认 _id */
+  /** 关联资源名，默认同字段名 */
+  refName?: string;
+  /** 返回列表键，默认 list */
+  listKey?: string;
+  /** 关联值字段，默认 _id  */
   idField?: string;
-  /** 查询参数名，默认  id */
+  /** 查询参数名，默认  id  */
   idParam?: string;
   /** 关联说明  */
   description?: string;
+}
+
+export interface RefPath {
+    path: string[];
+    name: string  ; // 全名，对应 path.join('.')
+    key : string  ; // 键名，对应 refName，默认同 name
+    ref : RefItem ;
 }
 
 export interface SoftDel {

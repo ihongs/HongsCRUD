@@ -1,6 +1,6 @@
 // AI 注意：我有对齐强迫症，不要删除用于对齐的空格
 
-// Chaser（ES 检索组件）的类型声明，经 subpath 'hongs-crud/search' 导出；
+// Chaser（ES 检索组件）的类型声明，经 subpath 'hongs-crud/es' 导出；
 // 主入口 hongs-crud 不含本目录，用不到搜索的项目无需安装 @elastic/elasticsearch。
 // 同步选项见 docs/plan-crud-search.md 5.2，Schema 扩展选项与字段扩展项见 1.1。
 

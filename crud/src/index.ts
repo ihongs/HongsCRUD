@@ -6,6 +6,9 @@ import type {
   Crud,
   Context,
   SoftDel,
+  RefItem,
+  RefPath,
+  RefsSpec,
   ColsSpec,
   SearchParams,
   SearchResult,
@@ -15,8 +18,8 @@ import type {
   UpdateResult,
   DeleteParams,
   DeleteResult,
-  CountsParams,
-  CountsResult,
+  StatisParams,
+  StatisResult,
   UpsertParams,
   UpsertResult,
   UpsertError,
@@ -122,8 +125,9 @@ export enum CrudErrno {
 export class Cradle implements Crud {
   private readonly _schema: Schema;
   private readonly _model: Model<any>;
+  private _refPaths?: RefPath[];
 
-  callable = ['create', 'update', 'delete', 'search', 'counts', 'upsert', 'schema'];
+  callable = ['create', 'update', 'delete', 'search', 'statis', 'upsert', 'schema'];
 
   constructor(
     schema: Schema,
@@ -142,6 +146,15 @@ export class Cradle implements Crud {
 
   getModel(): Model<any> {
     return this._model;
+  }
+
+  /**
+   * refs 字段路径（缓存）
+   * 首次调用遍历 schema 收集，之后复用，避免每次 search / statis 重复遍历
+   */
+  protected getRefPaths(): RefPath[] {
+    if (! this._refPaths) this._refPaths = getRefPaths(this.getSchema());
+    return this._refPaths;
   }
 
   /**
@@ -342,8 +355,8 @@ export class Cradle implements Crud {
       }) as unknown as DeleteResult;
   }
 
-  search(params: SearchParams, _ctx: Context): SearchResult {
-    const { id, wd, mode, find = {}, cols, sort, start = 0 } = params;
+  search(params: SearchParams, ctx: Context): SearchResult {
+    const { id, wd, mode, find = {}, sort, cols, refs, start = 0 } = params;
     const Model = this.getModel();
     const sdel  = this.getSoftDeleteCond();
     const cond  = mixFinds(id, wd, find, sdel);
@@ -370,29 +383,37 @@ export class Cradle implements Crud {
       return q;
     };
 
+    // 先正常 search，最后调函数补充 refs（only-total 无 list 不需要）
+    const withRefs = (promise: Promise<any>): Promise<any> =>
+      promise.then(async result => {
+        const refsData = await fillSearchRefs(this.getRefPaths(), result.list || [], refs, ctx);
+        if (refsData) result.refs = refsData;
+        return result;
+      });
+
     if (mode === 'only-total') {
       return Model.countDocuments(cond).then(total => ({ total })) as unknown as SearchResult;
     }
 
-    if (mode === 'only-items') {
-      return buildQuery().exec().then(items => ({ items })) as unknown as SearchResult;
+    if (mode === 'only-list') {
+      return withRefs(buildQuery().exec().then(list => ({ list }))) as unknown as SearchResult;
     }
 
-    if (mode === 'has-more') {
-      return Promise.all([
+    if (mode === 'list-more') {
+      return withRefs(Promise.all([
         buildQuery().exec(),
         Model.findOne(cond).skip(start + limit).select('_id').lean().exec(),
-      ]).then(([items, more]) => ({ items, more: !!more })) as unknown as SearchResult;
+      ]).then(([list, more]) => ({ list, more: !!more }))) as unknown as SearchResult;
     }
 
-    return Promise.all([
+    return withRefs(Promise.all([
       buildQuery().exec(),
       Model.countDocuments(cond),
-    ]).then(([items, total]) => ({ items, total })) as unknown as SearchResult;
+    ]).then(([list, total]) => ({ list, total }))) as unknown as SearchResult;
   }
 
-  counts(params: CountsParams, _ctx: Context): CountsResult {
-    const { id, wd, find = {}, cols, sels, top = 10 } = params;
+  statis(params: StatisParams, ctx: Context): StatisResult {
+    const { id, wd, find = {}, sels, cols, refs, tops = 10 } = params;
     const Model = this.getModel();
     const sdel  = this.getSoftDeleteCond();
 
@@ -418,7 +439,7 @@ export class Cradle implements Crud {
       targets = targets.filter(f => mode === 1 ? cols[f] === 1 : cols[f] !== 0);
     }
     if (! targets.length) {
-      return totalPromise.then(total => ({ counts: {}, total })) as unknown as CountsResult;
+      return totalPromise.then(total => ({ hits: {}, total })) as unknown as StatisResult;
     }
 
     // 分两组：
@@ -431,10 +452,10 @@ export class Cradle implements Crud {
       else           unselTargets.push(f); // 未选没值 → A 组
     }
 
-    // 读取 top 工具函数
-    const topFor = (f: string): number => {
-      if (typeof top === 'number') return top;
-      if (top && typeof top === 'object' && top[f] !== undefined) return top[f];
+    // 读取 tops 工具函数
+    const topsFor = (f: string): number => {
+      if (typeof tops === 'number') return tops;
+      if (tops && typeof tops === 'object' && tops[f] !== undefined) return tops[f];
       return 0;
     };
 
@@ -444,7 +465,7 @@ export class Cradle implements Crud {
         { $group  : { _id: '$' + f, count: { $sum: 1 } } },
         { $sort   : { count: -1 } },
       ];
-      const topN = topFor(f);
+      const topN = topsFor(f);
       if (topN > 0) stages.push({ $limit: topN });
       return stages;
     };
@@ -482,26 +503,28 @@ export class Cradle implements Crud {
       resultsByName[f] = Model.aggregate<any>(stages).exec();
     }
 
-    // 等所有结果，按 targets 顺序组装 counts
+    // 等所有结果，按 targets 顺序组装 hits
     const allNames = Object.keys(resultsByName);
     const allProms = allNames.map(n => resultsByName[n]);
-    return Promise.all([totalPromise, Promise.all(allProms)]).then(([total, allLists]) => {
+    return Promise.all([totalPromise, Promise.all(allProms)]).then(async ([total, allLists]) => {
       const listMap: Record<string, any[]> = {};
       for (let i = 0; i < allNames.length; i++) listMap[allNames[i]] = allLists[i];
 
-      const counts: Record<string, Record<string, number>> = {};
+      const hits: Record<string, any[]> = {};
       for (const f of targets) {
         const list = listMap[f] || [];
-        const map : Record<string, number> = {};
-        for (const g of list) {
-          // value 作 key，统一 String() 化（ObjectId / Date / null 都能作 key）
-          const k = g._id === null || g._id === undefined ? '' : String(g._id);
-          map[k] = g.count;
-        }
-        counts[f] = map;
+        hits[f] = list.map(g => ({
+          // value 作键，统一 String() 化（ObjectId / Date / null 都能作值）
+          value: g._id === null || g._id === undefined ? '' : String(g._id),
+          count: g.count,
+        }));
       }
-      return { counts, total };
-    }) as unknown as CountsResult;
+      const result: StatisResult = { hits, total };
+      // 先正常 statis，最后调函数补充 refs
+      const refsData = await fillStatisRefs(this.getRefPaths(), hits, refs, ctx);
+      if (refsData) result.refs = refsData;
+      return result;
+    }) as unknown as StatisResult;
   }
 
   upsert(params: UpsertParams, _ctx: Context): UpsertResult {
@@ -578,9 +601,7 @@ export class Cradle implements Crud {
     const { cols } = params;
     const schema = this.getSchema();
     const opts   = (schema as any).options || {};
-    const keys   = cols ? Object.keys(cols) : [];
-    const refs   = new Set<string>();
-    const node   = buildObjectNode(schema, cols, refs);
+    const node   = buildObjectNode(schema, cols);
 
     const result: SchemaResult = {
       $schema   : 'https://json-schema.org/draft/2020-12/schema',
@@ -590,22 +611,6 @@ export class Cradle implements Crud {
     if (opts.title      ) result.title       = opts.title;
     if (opts.description) result.description = opts.description;
     if (node.required   ) result.required    = node.required;
-
-    // x-references：仅输出被 references 引用到的列表
-    const refData = (schema as any).get('references') || {};
-    let   refdata : Record<string, Record<any, any>[]> = {};
-    if (cols !== undefined) {
-      for (const name of refs) {
-        if (! refdata[name] && refData[name]) refdata[name] = refData[name];
-      }
-      // 可能有些额外引用数据与具体字段无关
-      for (const name of keys) {
-        if (! refdata[name] && refData[name]) refdata[name] = refData[name];
-      }
-    } else {
-      refdata = refData;
-    }
-    if (Object.keys(refdata).length) result['x-references'] = refdata;
 
     return result;
   }
@@ -656,12 +661,204 @@ export function isPermitted(auth: string, roles: string[] | Set<string>): boolea
   return false;
 }
 
+/* ---------- Refs ---------- */
+
 /**
- * 取数据列表中的取值集合
- * 便于给 mongoose 的 enum 赋值
+ * 收集 schema 内声明 reference 的字段路径（RefPath 定义见 types.ts）
+ * 普通字段取 path.options，数组字段另查元素级 caster.options；
+ * 子文档 / 子文档数组递归下钻，prefix 为嵌套时的路径前缀（数组，取值无需再拆点号）
  */
-export function getValues(items: Record<string, any>[], valueField: string): string[] {
-  return items.map(item => String(item[valueField]));
+export function getRefPaths(schema: Schema, prefix?: string[], seen?: Set<Schema>): RefPath[] {
+  const refPaths: RefPath[] = [];
+  if (! seen) seen = new Set();
+  if (seen.has(schema)) return refPaths;
+  seen.add(schema);
+
+  for (const name in schema.paths) {
+    if (name.startsWith('__') || name.includes('$*')) continue;
+    const stype = (schema.paths as any)[name];
+    if (! stype) continue;
+
+    const path = prefix ? [...prefix, name] : [name];
+    const opts = stype.options || {};
+    // 数组元素级选项在 caster.options，优先取更精确的元素级声明
+    const copts = stype.caster ? (stype.caster.options || {}) : {};
+    const ref: RefItem | undefined = copts.reference || opts.reference;
+    if (ref) {
+      const name = path.join('.');
+      const key  = ref.refName || name;
+      refPaths.push({ path, name, key, ref });
+    }
+    if (stype.schema) {
+      refPaths.push(...getRefPaths(stype.schema, path, seen));
+    }
+  }
+  return refPaths;
+}
+
+/**
+ * refs 命中判定（类似 cols 白/黑名单）
+ * undefined / null 等同 false 不取，boolean 直接采用，对象按 key（聚集名）或 name（点号全路径）命中
+ */
+function refHit(refs: RefsSpec | null | undefined, rp: RefPath): boolean {
+  if (refs == null) return false;
+  if (typeof refs === 'boolean') return refs;
+  const mode = Object.values(refs).every(v => v === 1) ? 1 : 0;
+  if (mode === 1) return refs[rp.key] === 1 || refs[rp.name] === 1;
+  return refs[rp.key] !== 0 && refs[rp.name] !== 0;
+}
+
+/**
+ * 从统计结果收集 refs 需要的外键值映射 {key: [外键值]}
+ * refs 假值（undefined / null 等）等同 false，不收集
+ * hits 的键为点号全路径（name），值为 [{value, count}] 数组，value 空串为缺失标记
+ * 同聚集名（key）的多字段合并收集在一起
+ */
+export function getHitIds(
+  refPaths: RefPath[],
+  hits    : Record<string, any[]>,
+  refs   ?: RefsSpec,
+): Record<string, any[]> {
+  const refIds: Record<string, any[]> = {};
+  if (refPaths.length === 0 || ! hits) return refIds;
+
+  for (const rp of refPaths) {
+    if (! refHit(refs, rp)) continue;
+    const list = hits[rp.name];
+    if (! list) continue;
+    const vals = list.map(h => h.value).filter(v => v !== '');
+    if (vals.length) refIds[rp.key] = [...new Set([...(refIds[rp.key] || []), ...vals])];
+  }
+  return refIds;
+}
+
+/**
+ * 从文档列表收集 refs 需要的外键值映射 {key: [外键值]}
+ * refs 假值（undefined / null 等）等同 false，不收集
+ * 同聚集名（key）的多字段合并收集在一起
+ */
+export function getRefIds(
+  refPaths: RefPath[],
+  list    : any[],
+  refs   ?: RefsSpec,
+): Record<string, any[]> {
+  const refIds: Record<string, any[]> = {};
+  if (refPaths.length === 0 || ! list || list.length === 0) return refIds;
+
+  for (const rp of refPaths) {
+    if (! refHit(refs, rp)) continue;
+    const vals = new Set(refIds[rp.key] || []);
+    for (const item of list) {
+      padRefVal(vals, getDocVal(item, rp.path));
+    }
+    if (vals.size) refIds[rp.key] = [...vals];
+  }
+  return refIds;
+}
+
+/** 递归展开取值并 String() 化，跳过空值，Set 去重 */
+function padRefVal(vals: Set<string>, val: any): void {
+  if (val === undefined || val === null || val === '') return;
+  if (Array.isArray(val)) {
+    for (const v of val ) {
+      padRefVal(vals, v );
+    }
+  } else {
+    vals.add(String(val));
+  }
+}
+
+/**
+ * 按路径数组取值，数组感知（跨数组子文档取叶子时逐元素下钻，得扁平数组）
+ * mongoose 文档 / 子文档走 get，普通对象下标取值
+ */
+function getDocVal(doc: any, path: string[]): any {
+  let cur = doc;
+  for (const k of path) {
+    if (cur === undefined || cur === null) return cur;
+    if (Array.isArray(cur)) {
+      cur = cur.map(el => getDepVal(el, k));
+    } else {
+      cur = getDepVal(cur, k);
+    }
+  }
+  return cur;
+}
+
+/** 取单段字段：mongoose 文档 / 子文档走 get，普通对象下标取值 */
+function getDepVal(val: any, name: string): any {
+  if (val === undefined || val === null) return val;
+  if (typeof val.get === 'function') {
+    return val.get(name);
+  } else {
+    return val[name];
+  }
+}
+
+/**
+ * 按 {key: [外键值]} 映射补充关联数据
+ * 调 reference 的 method 附带 params {[idParam]: 外键值} 获取，
+ * 返回 {key: [关联数据]}（按外键查到的行数组，原样给出不去重）
+ */
+export async function fillRefs(
+  refPaths: RefPath[],
+  refIds  : Record<string, any[]>,
+  ctx    ?: Context,
+): Promise<Record<string, any[]>> {
+  const keyMap: Record<string, RefPath> = {};
+  // 同聚集名（key）的多字段共享首个 ref 配置（method/params 等）
+  for (const rp of refPaths) if (! keyMap[rp.key]) keyMap[rp.key] = rp;
+
+  const keys = Object.keys(refIds).filter(k => {
+    const rp = keyMap[k];
+    return !! (rp && rp.ref.method && refIds[k].length);
+  });
+  const refs: Record<string, any[]> = {};
+
+  await Promise.all(keys.map(async k => {
+    const rp = keyMap[k];
+    const vals = refIds[k];
+    const res = await callFunc(rp.ref.method as string, {
+      limit: vals.length, // 注入取数条数防默认截断，可被 params 覆盖
+      ...(rp.ref.params || {}),
+      [rp.ref.idParam || 'id']: vals,
+    }, ctx || {});
+    refs[k] = Array.isArray(res) ? res : (res && res[rp.ref.listKey || 'list']) || [];
+  }));
+
+  return refs;
+}
+
+/**
+ * search 结果补充 refs（脱离 Cradle 的便捷函数，Chaser 可复用）
+ * refs 假值或无可取外键时返回 undefined
+ */
+export async function fillSearchRefs(
+  refPaths: RefPath[],
+  list    : any[],
+  refs   ?: RefsSpec,
+  ctx    ?: Context,
+): Promise<Record<string, any[]> | undefined> {
+  if (! refs) return undefined;
+  const refIds = getRefIds(refPaths, list || [], refs);
+  if (Object.keys(refIds).length === 0) return undefined;
+  return fillRefs(refPaths, refIds, ctx);
+}
+
+/**
+ * statis 结果补充 refs（脱离 Cradle 的便捷函数，Chaser 可复用）
+ * refs 假值或无可取外键时返回 undefined
+ */
+export async function fillStatisRefs(
+  refPaths: RefPath[],
+  hits    : Record<string, any[]>,
+  refs   ?: RefsSpec,
+  ctx    ?: Context,
+): Promise<Record<string, any[]> | undefined> {
+  if (! refs) return undefined;
+  const refIds = getHitIds(refPaths, hits || {}, refs);
+  if (Object.keys(refIds).length === 0) return undefined;
+  return fillRefs(refPaths, refIds, ctx);
 }
 
 export function mixConds(
@@ -715,9 +912,8 @@ export function mixFinds(
 /**
  * 构建 object 节点
  * cols 仅过滤顶层字段
- * refs 收集所需引用键
  */
-export function buildObjectNode(schema: Schema, cols?: ColsSpec, refs?: Set<string>): SchemaNode {
+export function buildObjectNode(schema: Schema, cols?: ColsSpec): SchemaNode {
   const node: SchemaNode = { type: 'object', properties: {} };
   const mode = cols && Object.values(cols).every(v => v === 1) ? 1 : 0;
 
@@ -747,7 +943,7 @@ export function buildObjectNode(schema: Schema, cols?: ColsSpec, refs?: Set<stri
     }
 
     const last = keys[keys.length - 1];
-    (host.properties = host.properties || {})[last] = buildItemNode(path, refs);
+    (host.properties = host.properties || {})[last] = buildItemNode(path);
     if ((path as any).isRequired) {
       (host.required = host.required || []).push(last);
     }
@@ -770,9 +966,9 @@ export function buildObjectNode(schema: Schema, cols?: ColsSpec, refs?: Set<stri
  * 构建字段节点
  * 数组、子文档、Map 均递归展开
  */
-function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
+function buildItemNode(path: any): SchemaNode {
   const opts = path.options || {};
-  const node = buildTypeNode(path, refs);
+  const node = buildTypeNode(path);
 
   if (opts.title      ) node.title       = opts.title;
   if (opts.description) node.description = opts.description;
@@ -811,19 +1007,14 @@ function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
   if (opts.immutable === true ) node['x-immutable'] = true;
   if (opts.countable === true ) node['x-countable'] = true;
 
-  // 关联或枚举，有 items 无 method 即取自 references，记下以便输出选项数据
+  // 关联来源，声明取数方法及组装规则
   if (opts.reference) {
     node['x-reference'] = opts.reference;
-    if (refs && opts.reference.items && ! opts.reference.method) {
-      refs.add(opts.reference.items);
-    }
   }
 
-  // 公开扩展选项，键加 x- 前缀
-  if (opts.extra) {
-    for (const [key, val] of Object.entries(opts.extra)) {
-      node['x-' + key] = val;
-    }
+  // 枚举标签
+  if (opts.enumTags) {
+    node['x-enum-tags'] = opts.enumTags;
   }
 
   return node;
@@ -832,18 +1023,18 @@ function buildItemNode(path: any, refs?: Set<string>): SchemaNode {
 /**
  * 构建字段的类型部分
  */
-function buildTypeNode(path: any, refs?: Set<string>): SchemaNode {
+function buildTypeNode(path: any): SchemaNode {
   switch (path.instance) {
     case 'Embedded':
-      return buildObjectNode(path.schema, undefined, refs);
+      return buildObjectNode(path.schema);
 
     case 'Array': {
       const node: SchemaNode = { type: 'array' };
       const cast = path.caster || path.$embeddedSchemaType;
       if (cast) {
         node.items = cast.schema
-          ? buildObjectNode(cast.schema, undefined, refs)
-          : buildItemNode(cast, refs);
+          ? buildObjectNode(cast.schema)
+          : buildItemNode(cast);
       }
       return node;
     }
@@ -853,8 +1044,8 @@ function buildTypeNode(path: any, refs?: Set<string>): SchemaNode {
       const of = path.$__schemaType;
       if (of) {
         node.additionalProperties = of.schema
-          ? buildObjectNode(of.schema, undefined, refs)
-          : buildItemNode(of, refs);
+          ? buildObjectNode(of.schema)
+          : buildItemNode(of);
       } else {
         node.additionalProperties = true;
       }

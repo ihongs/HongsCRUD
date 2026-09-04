@@ -4,14 +4,14 @@
 // 构造与客户端见 2 节，
 // mapping 推导见 1.1 - 1.3，
 // find 到 DSL 的翻译见 2.1（nested 归组见 1.3），
-// search / counts 检索见 3 / 4 节（文档结构与回表见 2.2），
+// search / statis 检索见 3 / 4 节（文档结构与回表见 2.2），
 // 同步见 5 节。
 
 import type { Schema, Model } from 'mongoose';
 import type { Client } from '@elastic/elasticsearch';
 import type { SyncOpts, SyncFindOpts, SyncCullOpts, SyncStat, EsOpts, EsLeaf, EsCond } from './types';
-import type { FindSpec, SortSpec, ColsSpec, SearchParams, SearchResult, CountsParams, CountsResult, Context } from '../types';
-import { Cradle, CrudError, CrudErrno } from '../index';
+import type { FindSpec, SortSpec, ColsSpec, SearchParams, SearchResult, StatisParams, StatisResult, Context } from '../types';
+import { Cradle, CrudError, CrudErrno, fillSearchRefs, fillStatisRefs } from '../index';
 
 export * from './types';
 
@@ -31,7 +31,7 @@ export function getEsClient(): Client | undefined {
 
 /* ---------- Chaser ---------- */
 
-/** terms 聚合 size 上限约定值（ES search.max_buckets 默认），top 为 0（不限）时取它，见 4 节 */
+/** terms 聚合 size 上限约定值（ES search.max_buckets 默认），tops 为 0（不限）时取它，见 4 节 */
 const TERMS_MAX = 65536;
 
 export class Chaser extends Cradle {
@@ -231,7 +231,7 @@ export class Chaser extends Cradle {
   /* ---------- find -> DSL 翻译（见 2.1） ---------- */
 
   /**
-   * 把 find / id / wd 翻译为 ES query DSL（对照表见 2.1），供 search / counts 共用
+   * 把 find / id / wd 翻译为 ES query DSL（对照表见 2.1），供 search / statis 共用
    * find 全部进 filter 上下文不计分；wd 非空时追加 match 到 must 参与打分，空则整个查询都在 filter 上下文
    */
   getQuery(find?: FindSpec, id?: string | string[], wd?: string): Record<string, any> {
@@ -445,9 +445,9 @@ export class Chaser extends Cradle {
     return super.search(params, ctx);
   }
 
-  /** 直查 mongo：透传 Cradle.counts 原实现，绕过 ES，供兜底或与索引比对用 */
-  rawCounts(params: CountsParams, ctx: Context): CountsResult {
-    return super.counts(params, ctx);
+  /** 直查 mongo：透传 Cradle.statis 原实现，绕过 ES，供兜底或与索引比对用 */
+  rawStatis(params: StatisParams, ctx: Context): StatisResult {
+    return super.statis(params, ctx);
   }
 
   /* ---------- 覆盖：读走 ES（见 3 / 4 节） ---------- */
@@ -458,12 +458,12 @@ export class Chaser extends Cradle {
    * 不传 sort 且有 wd 时按 _score 降序，即 ES 默认行为，无需显式处理；
    * 只有 id 没有 wd / find 时是纯取详情，无过滤无打分，分流 rawSearch 直查 mongo
    */
-  async search(params: SearchParams, _ctx: Context): Promise<SearchResult> {
-    const { id, wd, mode, find, cols, sort, start = 0 } = params;
+  async search(params: SearchParams, ctx: Context): Promise<SearchResult> {
+    const { id, wd, mode, find, sort, cols, refs, start = 0 } = params;
 
     // 只有 id 且无 wd / find：ES 帮不上忙还多一趟回表，直查 mongo
     if (id && !wd && (!find || !Object.keys(find).length)) {
-      return this.rawSearch(params, _ctx) as unknown as Promise<SearchResult>;
+      return this.rawSearch(params, ctx) as unknown as Promise<SearchResult>;
     }
 
     await this.makeIndex();
@@ -497,12 +497,12 @@ export class Chaser extends Cradle {
     const body: Record<string, any> = {
       query,
       from : start,
-      size : mode === 'has-more' ? size + 1 : size,   // 多取一条判断 more
+      size : mode === 'list-more' ? size + 1 : size,   // 多取一条判断 more
       _source: false,
     };
     if (sort) body.sort = this.getSort(sort);
-    // has-more 无需总数；totalHits 未传时走 ES 默认估算，true / 数字原样透传（见 3 节表格）
-    if (mode === 'has-more') {
+    // list-more 无需总数；totalHits 未传时走 ES 默认估算，true / 数字原样透传（见 3 节表格）
+    if (mode === 'list-more') {
       body.track_total_hits = false;
     } else if (params.totalHits !== undefined) {
       body.track_total_hits = params.totalHits;
@@ -512,22 +512,36 @@ export class Chaser extends Cradle {
     const hits = res.hits?.hits ?? [];
     const tot  = res.hits?.total;   // { value, relation }
 
-    // 回表只影响文档内容，only-total 无 items 不回表，见 3 节
+    // 回表只影响文档内容，only-total 无 list 不回表，见 3 节
     if (mode === 'only-total') {
       return { total: tot?.value ?? 0, totalRel: tot?.relation };
     }
-    if (mode === 'only-items') {
-      return { items: await this.getDocs(hits, cols, !!wd?.trim()) };
+    if (mode === 'only-list') {
+      const list = await this.getDocs(hits, cols, !!wd?.trim());
+      const result: any = { list };
+      // 先正常 search，最后调函数补充 refs
+      const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
+      if (refsData) result.refs = refsData;
+      return result;
     }
-    if (mode === 'has-more') {
-      const items = await this.getDocs(hits.slice(0, size), cols, !!wd?.trim());
-      return { items, more: hits.length > size };
+    if (mode === 'list-more') {
+      const list = await this.getDocs(hits.slice(0, size), cols, !!wd?.trim());
+      const result: any = { list, more: hits.length > size };
+      // 先正常 search，最后调函数补充 refs
+      const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
+      if (refsData) result.refs = refsData;
+      return result;
     }
-    return {
-      items: await this.getDocs(hits, cols, !!wd?.trim()),
+    const list = await this.getDocs(hits, cols, !!wd?.trim());
+    const result: any = {
+      list,
       total : tot?.value ?? 0,
       totalRel: tot?.relation,
     };
+    // 先正常 search，最后调函数补充 refs
+    const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
+    if (refsData) result.refs = refsData;
+    return result;
   }
 
   /**
@@ -589,14 +603,14 @@ export class Chaser extends Cradle {
    * nested + reverse_nested（同 path 的 sels 下移到 nested 内部，见 1.3）取父文档数，
    * total 用应用全部 sels 的额外 filter 聚合的 doc_count（精确值，与 hits 无关）
    */
-  counts(params: CountsParams, _ctx: Context): CountsResult {
-    return (async (): Promise<CountsResult> => {
+  statis(params: StatisParams, ctx: Context): StatisResult {
+    return (async (): Promise<StatisResult> => {
       await this.makeIndex();
 
-      const { id, wd, find, cols, sels, top = 10 } = params;
+      const { id, wd, find, sels, cols, refs, tops = 10 } = params;
       const query = this.getQuery(find, id, wd);   // 不含 sels，各聚合自行叠加，见 4 节
 
-      // sels -> 条件（空数组视为没选，不生成条件），联动语义与 Cradle.counts 一致
+      // sels -> 条件（空数组视为没选，不生成条件），联动语义与 Cradle.statis 一致
       const selConds: Record<string, EsCond[]> = {};
       if (sels) {
         for (const [field, values] of Object.entries(sels)) {
@@ -607,7 +621,7 @@ export class Chaser extends Cradle {
         }
       }
 
-      // 统计目标 = 入索引 + countable 字段，再经 cols 白/黑名单过滤（判定方式与 Cradle.counts 相同）
+      // 统计目标 = 入索引 + countable 字段，再经 cols 白/黑名单过滤（判定方式与 Cradle.statis 相同）
       const countable = [...this._countable];
       let   targets   = countable;
       if (cols) {
@@ -615,9 +629,9 @@ export class Chaser extends Cradle {
         targets = countable.filter(f => (mode === 1 ? cols[f] === 1 : cols[f] !== 0));
       }
 
-      const topFor = (f: string): number => {
-        if (typeof top === 'number') return top;
-        if (top && typeof top === 'object' && (top as any)[f] !== undefined) return (top as any)[f];
+      const topsFor = (f: string): number => {
+        if (typeof tops === 'number') return tops;
+        if (tops && typeof tops === 'object' && (tops as any)[f] !== undefined) return (tops as any)[f];
         return 0;
       };
 
@@ -631,7 +645,7 @@ export class Chaser extends Cradle {
       for (const f of targets) {
         const leaf  = this._leaves.get(f) as EsLeaf;
         const chain = this.nestedChain(f);
-        const topN  = topFor(f);
+        const topN  = topsFor(f);
         const size  = topN > 0 ? topN : TERMS_MAX;   // 0 = 不限，取 ES 桶上限约定值
 
         // 除自身外的 sels：与被统计字段同 nested path（chain 为其前缀）的条件下移到 nested
@@ -689,26 +703,32 @@ export class Chaser extends Cradle {
         aggs,
       } as any)) as any;
 
-      // 逐字段取桶：键统一 String() 化；nested 取 reverse_nested 的 doc_count（父文档数）
+      // 逐字段取桶：值统一 String() 化；nested 取 reverse_nested 的 doc_count（父文档数）
       const aggsRes = res.aggregations ?? {};
-      const counts : Record<string, Record<string, number>> = {};
+      const hits   : Record<string, any[]> = {};
       for (const f of targets) {
         const { nav, revNested } = specs[f];
         let node = aggsRes[f];
         for (const k of nav) node = node?.[k];
-        const map: Record<string, number> = {};
+        const list: any[] = [];
         for (const b of node?.buckets ?? []) {
-          const key = b.key === null || b.key === undefined ? '' : String(b.key);
-          map[key] = revNested ? b.p?.doc_count ?? 0 : b.doc_count;
+          list.push({
+            value: b.key === null || b.key === undefined ? '' : String(b.key),
+            count: revNested ? b.p?.doc_count ?? 0 : b.doc_count,
+          });
         }
         const miss = revNested   // nested：缺失 = filter 上下文总数 - 有值数
           ? Math.max(0, (aggsRes[f]?.doc_count ?? 0) - (aggsRes[f]?.m?.doc_count ?? 0))
           : aggsRes[f]?.m?.doc_count ?? 0;
-        if (miss) map[''] = miss;
-        counts[f] = map;
+        if (miss) list.push({ value: '', count: miss });
+        hits[f] = list;
       }
-      return { counts, total: aggsRes.__total?.doc_count ?? 0 };
-    })() as unknown as CountsResult;
+      const result: StatisResult = { hits, total: aggsRes.__total?.doc_count ?? 0 };
+      // 先正常 statis，最后调函数补充 refs
+      const refsData = await fillStatisRefs(this.getRefPaths(), hits, refs, ctx);
+      if (refsData) result.refs = refsData;
+      return result;
+    })() as unknown as StatisResult;
   }
 
   /* ---------- 文档同步：唯一 ES 写入出口，不查 mongo（见 5.1 - 5.3） ---------- */
@@ -1066,7 +1086,7 @@ function makeMapping(
     type: 'text',
     ...(esOpts.esAnalyzer ? { analyzer: esOpts.esAnalyzer } : {}),
   };
-  // 同步戳：syncDocs 每次写入时置为当前时间，不开放给 find / sort / counts 引用
+  // 同步戳：syncDocs 每次写入时置为当前时间，不开放给 find / sort / statis 引用
   properties[esOpts.esSyncTime] = { type: 'date' };
 
   return {

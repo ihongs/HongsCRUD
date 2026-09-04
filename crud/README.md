@@ -1,8 +1,8 @@
 # hongs-crud
 
-基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `counts / upsert / schema` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
+基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `statis / upsert / schema` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
 
-另含可选的检索组件 `Chaser`（从 `hongs-crud/search` 引入），把 `search` / `counts` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 4 节。
+另含可选的检索组件 `Chaser`（从 `hongs-crud/es` 引入），把 `search` / `statis` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 4 节。
 
 源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
@@ -18,23 +18,13 @@ npm install hongs-crud
 
 `hongs-crud` 围绕标准 Mongoose `Schema` 展开，能力通过两种扩展叠加获得：
 
-- **字段内部自定义选项**：`title` / `description` / `writable` / `readable` / `countable` / `reference` 等。
-- **扩展参数自定义选项**：`title` / `description` / `collection` / `references` / `softDelete` / `limitDef` / `limitMax` 等。
+- **字段内部自定义选项**：`title` / `description` / `writable` / `readable` / `countable` / `reference` / `enumTags` 等。
+- **扩展参数自定义选项**：`title` / `description` / `collection` / `softDelete` / `limitDef` / `limitMax` 等。
 
 下面是一个完整、简单的例子，包含所有扩展点：
 
 ```ts
 import { Schema } from 'mongoose';
-import { getValues } from 'hongs-crud';
-
-/* ---------- 数据列表：放到 Schema 的 references 里，字段通过 reference 引用 ---------- */
-const REFERENCES = {
-  status: [
-    { value: 'active', title: '启用' },
-    { value: 'frozen', title: '冻结' },
-    { value: 'closed', title: '关闭' },
-  ]
-};
 
 const userSchema = new Schema(
   /* ====================== 字段定义 ====================== */
@@ -68,22 +58,23 @@ const userSchema = new Schema(
       type: String,
       default: 'active',                             // → default
       immutable: true,                               // → x-immutable，创建后不可修改
-      countable: true,                               // → x-countable，可被 counts() 统计
-      reference: { items: 'userStatus' },            // → x-reference，引用 references.userStatus
-      enum: getValues(REFERENCES.userStatus),        // mongoose 原生枚举验证，不透出
+      countable: true,                               // → x-countable，可被 statis() 统计
+      enum: ['active', 'frozen', 'closed'],          // mongoose 原生枚举验证，不透出
+      enumTags: {                                    // → x-enum-tags，码值 → 标签
+        active: '启用', frozen: '冻结', closed: '关闭',
+      },
     },
     orgId: {
       type: Schema.Types.ObjectId,                   // → type: string, format: object-id
-      reference: {                                   // 有 method 即远程取数
-        method: 'org.search',                        // json-rpc 方法名（Func 或 CrudName.MethodName）
-        params: { cols: { _id: 1, name: 1 } },       // 附加参数
-        items : 'items',                             // 返回结果中的列表键，默认 items
-        value : '_id',                               // 取值字段名，默认 value
-        title : 'name',                              // 显示字段名，默认 title
+      reference: {                                   // 远程取数，search/statis 传 refs 时取回关联数据
+        method     : 'org.search',                   // json-rpc 方法名（Func 或 CrudName.MethodName）
+        params     : { cols: { _id: 1, name: 1 } },  // 附加参数
+        refName    : 'org',                          // refs 聚集名，默认为字段名
+        listKey    : 'list',                         // 返回结果中的列表键，默认 list
+        idField    : '_id',                          // 关联项取值字段，默认 _id
+        idParam    : 'id',                           // 查询参数名，默认 id
+        description: '所属组织',                     // 关联说明
       },
-      extra: {
-        opt: 'value',                                // → x-opt，公开扩展选项
-      }
     }
   },
 
@@ -92,7 +83,6 @@ const userSchema = new Schema(
     collection: 'users',                 // 必填：集合名，同时用作 mongoose.model() 名称
     timestamps: true,                    // mongoose 原生：自动维护 createdAt / updatedAt
     softDelete: true,                    // 伪删除，等价于 { isDeleted: 'isDeleted', deletedAt: 'deletedAt', deleted: true, default: false }
-    references: REFERENCES,              // 数据表，字段通过 reference 引用
     limitDef  : 20,                      // search() 默认 limit，未传时的默认值，默认 1；0 表示不限
     limitMax  : 500,                     // search() limit 上限，超过抛 CrudErrno.PARAMS_INVALID，默认 1000；0 表示不限
     title       : '用户',                 // 模型标题，透出到 schema() 根节点 title
@@ -109,12 +99,11 @@ mongoose 扩展：
 | `description` | Schema 扩展、字段内 | 模型说明、字段说明，透出为 JSON Schema 的 `description` |
 | `writable` | 字段内 | 写 `writable: false` 表示外部不可写，透出为 `readOnly` |
 | `readable` | 字段内 | 写 `readable: false` 表示预留的禁读声明，透出为 `writeOnly`；与 `writable` 同属程序层面预留的读写符号，`select` 则为 mongoose 原生投影控制 |
-| `countable` | 字段内 | 写 `countable: true` 表示该字段可被 `counts()` 统计，透出为 `x-countable` |
-| `reference` | 字段内 | 声明该字段的选项数据来源，透出为 `x-reference`；无 `method` 时取 `references[items]`，有 `method` 时远程调用 |
-| `extra` | 字段内 | 任意附加信息，每个 key 加 `x-` 前缀后透出（如 `opt` → `x-opt`） |
+| `countable` | 字段内 | 写 `countable: true` 表示该字段可被 `statis()` 统计，透出为 `x-countable` |
+| `reference` | 字段内 | 声明该字段的关联数据来源，透出为 `x-reference`；通过 `method` 远程调用，供 `refs` 取数，见 2.4 / 3.5 |
+| `enumTags` | 字段内 | 枚举值 → 标签映射，透出为 `x-enum-tags`，与 `enum` 配套使用 |
 | `collection` | Schema 扩展 | **必填**，集合名 |
-| `softDelete` | Schema 扩展 | 伪删除配置；`true` 或 `{ isDeleted, deletedAt, deleted, default }`，启用后自动补字段，且 search / update / delete / counts 自动注入条件 |
-| `references` | Schema 扩展 | 引用数据表，字段通过 `reference.items` 引用，透出为 `x-references` |
+| `softDelete` | Schema 扩展 | 伪删除配置；`true` 或 `{ isDeleted, deletedAt, deleted, default }`，启用后自动补字段，且 search / update / delete / statis 自动注入条件 |
 | `limitDef` | Schema 扩展 | `search()` 默认 `limit`，默认 1，0 不限 |
 | `limitMax` | Schema 扩展 | `search()` `limit` 上限，默认 1000，0 不限，超过抛异常 `CrudErrno.PARAMS_INVALID` |
 
@@ -136,14 +125,14 @@ mongoose 选项到 JSON Schema 的映射：
 | `select: false` | `writeOnly` |
 | `readable: false` | `writeOnly` |
 | `writable: false` | `readOnly` |
-| `select: false` + `writable: false` | 整个字段跳过，不透出 |
+| `select or readable: false` + `writable: false` | 整个字段跳过，不透出 |
 | `createdAt` / `updatedAt` | `readOnly`（ timestamps 自动维护） |
 | `immutable: true` | `x-immutable` |
 | `countable: true` | `x-countable` |
-| `reference: { items }` | `x-reference` |
-| `extra: { opt: ... }` | `x-opt`（每个 key 加 `x-` 前缀） |
+| `reference: { ... }` | `x-reference` |
+| `enumTags: { ... }` | `x-enum-tags` |
 
-然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `counts` / `upsert` / `schema` 能力。
+然后，`new Cradle(userSchema)` 即可获得 `create` / `update` / `delete` / `search` / `statis` / `upsert` / `schema` 能力。
 
 ---
 
@@ -184,6 +173,9 @@ mongoose 选项到 JSON Schema 的映射：
 { affected: 1, validIds: ['66b...a01'] }
 ```
 
+- `force: true` 时，不存在的 id 静默跳过；缺省则抛异常。
+- `find` 可选，附加查询条件（做租户/归属隔离）。
+
 ### 2.4 search
 
 ```ts
@@ -196,13 +188,17 @@ mongoose 选项到 JSON Schema 的映射：
   sort : { createdAt: -1 },           // 排序
   start: 0,                           // 跳过
   limit: 20,                          // 上限；缺省用 schema.limitDef，超过 limitMax 抛异常
-  mode: '',                           // 统计模式，见下
+  mode: '',                           // 列表模式，见下
+  refs: true,                         // 关联数据：true 全部，或 {字段名: 1} 白名单，见下
 }
 
 // 返回
 {
-  items: [{ _id: '66b...a01', username: 'alice', status: 'active' }, ...],
+  list : [{ _id: '66b...a01', username: 'alice', status: 'active' }, ...],
   total: 32,
+  refs : {                            // 传了 refs 且有外键时才有，见下
+    'orgId': [{ _id: '66b...o01', name: '组织A' }, ...],
+  },
 }
 ```
 
@@ -210,12 +206,14 @@ mongoose 选项到 JSON Schema 的映射：
 
 | 值 | 返回 |
 |---|---|
-| 未传 | `{ items, total }` |
-| `'only-items'` | `{ items }` |
+| 未传 | `{ list, total }` |
+| `'list-more'` | `{ list, more }` |
+| `'only-list'` | `{ list }` |
 | `'only-total'` | `{ total }` |
-| `'has-more'` | `{ items, more }`（more = true 时有下一页） |
 
-### 2.5 counts（扩展）
+`refs` 关联数据：对结果 `list` 里声明了 `reference` 的字段，按聚集名 `reference.refName`（默认字段名）收集外键值（数组自动展开去重）——多个字段同指一个 refName（如工作单位所在地和毕业院校所在地都指向地区表）时，共享首个字段的 ref 配置（method、params 等），收集的外键值合并去重后一起查；各聚集名分别调 `reference.method`（经 `callFunc` 调度，需相应权限），返回 `{refName: [关联数据]}`（按外键查到的行数组，不建外键映射，映射由前端按需建立）。`refs` 传 `true` 全取，传对象时按字段名或 refName 命中：全为 `1` 是白名单，含 `0` 是黑名单，`undefined` / `null` 等同 `false` 不取（默认不取关联）。
+
+### 2.5 statis（扩展）
 
 对字段内声明了 `countable: true` 的字段做分组统计，常用于搜索页筛选器。
 
@@ -224,16 +222,21 @@ mongoose 选项到 JSON Schema 的映射：
 {
   find: { status: 'active' },         // 基础过滤
   sels: { status: ['active'] },       // 联动已选；空数组视为没选
-  top : 10,                           // 每字段取前 N，默认 10；也可按字段 { status: 5 }
+  tops: 10,                           // 每字段取前 N，默认 10；也可按字段 { status: 5 }
+  refs: true,                         // 关联数据：true 全部，或 {字段名: 1} 白名单，规则同 search
 }
 
 // 返回
 {
-  counts: {
-    status: { active: 28, frozen: 5, closed: 2 },
-    roles : { user: 32, admin: 3 },
-  },
   total: 35,                          // 应用 sels 已选条件后的总文档数
+  hits : {                            // 每字段 [{value, count}]，按 count 降序
+    status: [{ value: 'active', count: 28 }, { value: 'frozen', count: 5 }, { value: 'closed', count: 2 }],
+    roles : [{ value: 'user', count: 32 }, { value: 'admin', count: 3 }],
+    orgId : [{ value: '66b...o01', count: 12 }],
+  },
+  refs : {                            // 传了 refs 且有外键时才有，规则同 search
+    'orgId': [{ _id: '66b...o01', name: '组织A' }, ...],
+  },
 }
 ```
 
@@ -242,6 +245,8 @@ mongoose 选项到 JSON Schema 的映射：
 - 任一非空数组转为 `$in` 并入总过滤条件，`total` 反映该条件下的总数。
 - 已选字段不应用自己的 `sels` 条件（避免无法继续筛选该字段其他选项）。
 - 其他字段应用所有 `sels` 条件，结果相互联动。
+
+`hits` 桶结构：`value` 统一 `String()` 化（ObjectId / Date / 数字都可直接作键比对），字段缺失的文档记 `value: ''`；同 `count` 的桶顺序不保证稳定，按 `value` 对齐而非下标。
 
 ### 2.6 upsert（扩展）
 
@@ -274,7 +279,7 @@ mongoose 选项到 JSON Schema 的映射：
 
 ### 2.7 schema（扩展）
 
-把 Mongoose Schema 转译为标准 **JSON Schema**（draft 2020-12），供前端渲染表单及 AI 编排。返回体本身就是 JSON Schema 根节点：`$schema` / `type: 'object'` / `title` / `description` / `required` / `properties` / `x-references` 都在顶层，`properties` 里才是具体字段。
+把 Mongoose Schema 转译为标准 **JSON Schema**（draft 2020-12），供前端渲染表单及 AI 编排。返回体本身就是 JSON Schema 根节点：`$schema` / `type: 'object'` / `title` / `description` / `required` / `properties` 都在顶层，`properties` 里才是具体字段。
 
 ```ts
 // 请求
@@ -307,36 +312,30 @@ mongoose 选项到 JSON Schema 的映射：
     "age": {
       "type": "number",
       "minimum": 0,
-      "maximum": 200,
-      "x-opt": "value"
+      "maximum": 200
     },
     "status": {
       "type": "string",
       "default": "active",
       "x-immutable": true,
       "x-countable": true,
-      "x-reference": { "list": "userStatus" }
+      "x-enum-tags": { "active": "启用", "frozen": "冻结", "closed": "关闭" }
     },
     "orgId": {
       "type": "string",
       "format": "object-id",
       "x-reference": {
-        "method": "org.search",
-        "params": { "cols": { "_id": 1, "name": 1 } },
-        "list"  : "list",
-        "value" : "_id",
-        "title" : "name"
+        "method"     : "org.search",
+        "params"     : { "cols": { "_id": 1, "name": 1 } },
+        "refName"    : "org",
+        "listKey"    : "list",
+        "idField"    : "_id",
+        "idParam"    : "id",
+        "description": "所属组织"
       }
     },
     "createdAt": { "type": "string", "format": "date-time", "readOnly": true },
     "updatedAt": { "type": "string", "format": "date-time", "readOnly": true }
-  },
-  "x-references": {
-    "userStatus": [
-      { "value": "active", "title": "启用" },
-      { "value": "frozen", "title": "冻结" },
-      { "value": "closed", "title": "关闭" }
-    ]
   }
 }
 ```
@@ -344,9 +343,8 @@ mongoose 选项到 JSON Schema 的映射：
 节点说明：
 
 - **标准关键字**：`type` / `title` / `description` / `default` / `format` / `pattern` / `minLength` / `maxLength` / `minimum` / `maximum` / `minItems` / `maxItems` / `minProperties` / `maxProperties` / `items` / `properties` / `additionalProperties` / `required` / `readOnly` / `writeOnly`，语义与 JSON Schema 一致。
-- **扩展关键字**：`x-immutable`（创建后不可改）、`x-countable`（可被 `counts()` 统计）、`x-reference`（引用数据来源）、`x-references`（引用数据列表，仅根节点）。
+- **扩展关键字**：`x-immutable`（创建后不可改）、`x-countable`（可被 `statis()` 统计）、`x-reference`（关联数据来源）、`x-enum-tags`（枚举值 → 标签映射）。
 - **`required` 只在 object 节点上**：根节点及子文档节点用 `required: string[]`，字段节点自身不带 `required`。
-- **`x-xxx`**：对应字段内的 `extra`，所有 key 加上 'x-' 前缀。
 - 数组与子文档递归展开：`[String]` → `items: { type: 'string' }`，`[SubDocument]` → `items: { type: 'object', properties: {...} }`，`Map` → `additionalProperties: { ... }`。
 
 ---
@@ -374,7 +372,7 @@ getCrudNames();            // → ['user', ...]
 `Cradle` 默认的 `callable`（可被外部调度的方法白名单）为：
 
 ```ts
-callable = ['create', 'update', 'delete', 'search', 'counts', 'upsert', 'schema'];
+callable = ['create', 'update', 'delete', 'search', 'statis', 'upsert', 'schema'];
 ```
 
 子类可覆写 `callable` 来收紧或扩展，不在其中的方法即便权限符合也不会被调度。
@@ -386,9 +384,10 @@ import { regFunc, getFunc, hasFunc, getFuncNames } from 'hongs-crud';
 
 regFunc('health.ping',     () => ({ ok: true, ts: Date.now() }));
 regFunc('system.versions', () => ({ node: process.version }));
-regFunc('org.search',  async () => {
-  // 常见 reference 目标：返回 { items: [{_id, name}, ...] } 供下拉选项消费
-  return { items: [{ _id: 'o1', name: '组织A' }, { _id: 'o2', name: '组织B' }] };
+regFunc('org.search',  async ({ id, cols }) => {
+  // 常见 reference 目标：可接收 params { id: [外键值] }（refs 取数时传入），
+  // 返回 { list: [{_id, name}, ...] } 供下拉选项与关联数据消费
+  return { list: [{ _id: 'o1', name: '组织A' }, { _id: 'o2', name: '组织B' }] };
 });
 ```
 
@@ -401,7 +400,7 @@ import { regRole, hasRole, getRole, getRoleNames, isPermitted } from 'hongs-crud
 
 // 一个角色对应可执行「动作字符串」集合（Func 名 或 CrudName.MethodName）
 regRole('admin', ['user.search', 'user.create', 'user.update', 'user.delete',
-                  'user.counts', 'user.schema',
+                  'user.statis', 'user.schema',
                   'health.ping', 'system.versions']);
 regRole('user',  ['user.search', 'health.ping']);
 regRole('guest', ['health.ping']);
@@ -455,15 +454,15 @@ enum CrudErrno {
 
 ## 4. ES 检索组件（Chaser）
 
-`Chaser` 继承自 `Cradle`，在保留全部 CRUD 能力的基础上，把 `search` / `counts` 的查询执行搬到 Elasticsearch（全文检索、多条件过滤、聚合统计），并在写入后自动同步索引。适合数据量大、需要全文检索或复杂筛选联动的场景；mongo 始终是权威数据源，ES 只承担查询。
+`Chaser` 继承自 `Cradle`，在保留全部 CRUD 能力的基础上，把 `search` / `statis` 的查询执行搬到 Elasticsearch（全文检索、多条件过滤、聚合统计），并在写入后自动同步索引。适合数据量大、需要全文检索或复杂筛选联动的场景；mongo 始终是权威数据源，ES 只承担查询。
 
 ### 4.1 引入与初始化
 
-从 subpath `hongs-crud/search` 引入，主入口 `hongs-crud` 不含 `search`：
+从 subpath `hongs-crud/es` 引入，主入口 `hongs-crud` 不含 `es`：
 
 ```ts
 import { Client } from '@elastic/elasticsearch';
-import { Chaser, setEsClient } from 'hongs-crud/search';  // 注意：从 subpath 引入
+import { Chaser, setEsClient } from 'hongs-crud/es';  // 注意：从 subpath 引入
 
 const es = new Client({ node: 'http://127.0.0.1:9200' });
 
@@ -477,11 +476,11 @@ const userCrud = new Chaser(userSchema);
 
 用不到检索的项目无需安装 `@elastic/elasticsearch`，且安装 / 类型检查 / 打包三环节均不受影响：
 
-| 环节 | 未装 ES 客户端且不用 `search` | 说明 |
+| 环节 | 未装 ES 客户端且不用 `es` | 说明 |
 |---|---|---|
 | 安装 | 包管理器不告警 | ES 客户端在 peerDependencies 中标记为 optional |
-| 类型检查 | 不报错，无需 `skipLibCheck` | subpath 隔离，不 `import 'hongs-crud/search'` 就不会加载其类型声明 |
-| 打包 | 不报 `module not found`、无告警 | `search` 内对 ES 客户端只用 `import type`，产物零引用 |
+| 类型检查 | 不报错，无需 `skipLibCheck` | subpath 隔离，不 `import 'hongs-crud/es'` 就不会加载其类型声明 |
+| 打包 | 不报 `module not found`、无告警 | `es` 内对 ES 客户端只用 `import type`，产物零引用 |
 
 类与全局客户端（同步选项与统计见 4.5）：
 
@@ -502,18 +501,18 @@ export class Chaser extends Cradle {
   /** 拼装全文内容，写入 esFullText 字段；默认按 getTextable() 取值拼接，子类可覆盖 */
   protected getFullText(doc: any): string;
 
+  /* ---------- 直查 mongo：透传 Cradle 原实现 ---------- */
+  rawSearch(params: SearchParams, ctx: Context): Promise<SearchResult>;
+  rawStatis(params: StatisParams, ctx: Context): Promise<StatisResult>;
+
   /* ---------- 覆盖：读走 ES ---------- */
   search(params: SearchParams, ctx: Context): Promise<SearchResult>;
-  counts(params: CountsParams, ctx: Context): Promise<CountsResult>;
-
-  /* ---------- 直查 mongo：透传 Cradle 原实现，绕过 ES，供兜底或比对用 ---------- */
-  rawSearch(params: SearchParams, ctx: Context): SearchResult;
-  rawCounts(params: CountsParams, ctx: Context): CountsResult;
+  statis(params: StatisParams, ctx: Context): Promise<StatisResult>;
 
   /* ---------- 覆盖：写后同步（esAutoSync，见 4.5） ---------- */
   add   (data: Record<string, any>): [ any, string ];
   set   (id : string, data: Record<string, any>): [ any, number ];
-  putAll(ids: string[], data: Record<string, any>): number;
+  putAll(ids: string[], data : Record<string, any>): number;
   delAll(ids: string[], data?: Record<string, any>): number;
 
   /* ---------- 索引与同步（见 4.5 / 4.6） ---------- */
@@ -581,9 +580,9 @@ Schema 扩展选项：
 
 - **默认全同步**：Schema 中所有可映射字段一律纳入索引，仅 `syncable: false` 与不可映射类型（如 `Map`）不进。
 - `select: false` 的字段**默认照常同步**：`select` 只管「能否显示」，不管「能否查询」；同步进 ES 后可查、可排序，但不会出现在返回中（`cols` 显式指定时可取出）。确实不该入索引的（如密码）显式加 `syncable: false`。
-- `countable: true` 仍单独决定可否被 `counts()` 统计，但字段须先在索引内；与 `syncable: false` 并用视为配置矛盾，构造时抛 `CrudErrno.INTERNEL_ERROR`。
+- `countable: true` 仍单独决定可否被 `statis()` 统计，但字段须先在索引内；与 `syncable: false` 并用视为配置矛盾，构造时抛 `CrudErrno.INTERNEL_ERROR`。
 - 启用 `softDelete` 时，`isDeleted` / `deletedAt` 不入索引（ES 只留有效文档，见 4.4 / 4.5）；`timestamps` 的 `createdAt` / `updatedAt` 自动入索引，可直接排序与范围过滤。
-- **`esFullText` / `esSyncTime` 是组件内部字段**，分别承担全文检索与同步水位，不可在 `find` / `sort` / `counts` 中引用（引用时同不可映射字段一样抛 `PARAMS_INVALID`）；与业务字段撞名时改 Schema 选项避开即可。
+- **`esFullText` / `esSyncTime` 是组件内部字段**，分别承担全文检索与同步水位，不可在 `find` / `sort` / `statis` 中引用（引用时同不可映射字段一样抛 `PARAMS_INVALID`）；与业务字段撞名时改 Schema 选项避开即可。
 
 分词器：
 
@@ -643,12 +642,13 @@ class UserChaser extends Chaser {
 
 - **只有 `id` 没有 `wd` / `find` 的请求直查 mongo**（内部走 `rawSearch`）：纯取详情无过滤无打分，ES 帮不上忙还多一趟回表；软删除过滤等语义与 mongo 版完全一致。
 - **返回文档一律来自 mongo**：ES 查询只取 `_id` 与 `_score`，命中 id 回 mongo 取完整文档并按 ES 顺序重排，返回结构与 `Cradle.search` 完全一致；`cols` 交 mongo 处理，沿用 `Cradle` 的投影与 `select: false` 规则。条件、排序、分页、计数一概仍由 ES 完成。
+- `refs` 参数与 mongo 版一致：关联数据由字段级 `reference` 经 `callFunc` 补充（见 3.5），`Cradle` / `Chaser` 行为相同。
 - ES 命中但 mongo 已无（索引滞后 / 已硬删）的 id 直接跳过，不补位。
 - `wd` 非空时追加 `match` 到合并字段参与打分，并把 `_score` 并入结果；`wd` 为空则整个查询不计分。
 - **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 `textable: true` 的 String 可用，ES 侧翻译为 `match`（打 `.text` 子字段；`termsize: 0` 的纯 text 字段打主名），`operator: 'and'` 须全部分词命中；分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 要求 `body` 分词后 `hello` 与 `world` 同时命中；非 textable 字段或空串抛 `PARAMS_INVALID`。
 - 排序、分页（`start` / `limit`）、四种 `mode` 模式与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
 - **扁平模式的限制**：数组子文档未标 `nested: true` 时按 `object` 扁平索引，元素间的关联会丢失，跨字段的联合条件不保证落在同一元素。如 `find: { 'works.tag': 'a', 'works.qty': 9 }` 在扁平模式下会误命中「tag=a 与 qty=9 分属两个元素」的文档；要求同一元素同时满足时给该字段标 `nested: true`。
-- `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`counts` 统计自动内嵌 `reverse_nested` 回到父文档计数。
+- `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`statis` 统计自动内嵌 `reverse_nested` 回到父文档计数。
 - 不加软删除条件：ES 里只有有效文档；「已伪删但 ES 尚未同步」的滞后命中由回 mongo 查询的软删除条件自然过滤（等同跳过）。
 
 **自定义排序**：`getSort` 为 `protected`，负责把外部 `sort` 翻译为 ES sort 数组（数组序即多级排序优先级），重写它可接入脚本排序。如约定虚拟字段 `vFieldx` 表示按 `field1 * 0.8 + field2 * 0.5` 加权排序：

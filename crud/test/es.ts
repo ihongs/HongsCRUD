@@ -1,23 +1,34 @@
 // Chaser 集成测试（docs/plan-crud-search.md 6 节任务 12 - 14：基础 / 查询与 mapping 进阶 / 同步进阶）
-// 运行：npm run test:chaser
+// 运行：npm run test:es
 // 前置：本地 MongoDB（mongodb://127.0.0.1:27017）与 ES（http://127.0.0.1:9200，未开 security）已启动
 // 说明：add / set / delAll 的自动同步不带 refresh（见 5.1），用例里对索引显式 refresh 保证即刻可查；
 //       syncDocs / syncFind 显式调用时直接传 refresh: 'wait_for'
 
 import mongoose from 'mongoose';
 import { Client } from '@elastic/elasticsearch';
-import { Chaser } from '../src/search';
+import { Chaser } from '../src/es';
+import { regFunc, regRole } from '../src/index';
 
 const MONGO_URI = 'mongodb://127.0.0.1:27017/test';
 const ES_NODE   = 'http://127.0.0.1:9200';
-const CTX       = { uid: 'tester' };
+const CTX       = { uid: 'tester', roles: ['tester'] };
+
+// refs 数据源：regFunc 注册的 FUNCS
+regFunc('test-status-refs', async () => ({
+  list: [
+    { _id: 'draft'    , name: '草稿'   },
+    { _id: 'published', name: '已发布' },
+  ],
+}));
+regRole('tester', ['test-status-refs']);
 
 /* ---------- Schema：F 扁平组 / N nested 组 / S 伪删除 / Z 关自动同步 ---------- */
 /* ----------        P 查询进阶 / L 全文覆盖 / M 加字段 / T 增量水位 ---------- */
 
 const schemaF = new mongoose.Schema({
   name  : { type: String, textable: true },                                // 入全文，wd 可搜
-  status: { type: String, enum: ['draft', 'published'], countable: true },
+  status: { type: String, enum: ['draft', 'published'], countable: true,
+            reference: { method: 'test-status-refs' } },
   role  : { type: String, enum: ['admin', 'user']     , countable: true },
   age   : { type: Number, countable: true },
   tags  : { type: [String] },                                          // 标量数组
@@ -95,7 +106,7 @@ class LabeledChaser extends Chaser {
   }
 }
 
-/* ---------- 断言工具（与 test/counts.ts 一致） ---------- */
+/* ---------- 断言工具（与 test/crud.ts 一致） ---------- */
 
 function deepEqual(a: any, b: any): boolean {
   if (a === b) return true;
@@ -113,6 +124,11 @@ function deepEqual(a: any, b: any): boolean {
     return ka.every((k) => deepEqual(a[k], b[k]));
   }
   return false;
+}
+
+// hits 数组转 {value: count} 映射，消除桶内排序的不确定性
+function hitMap(list: any[]): Record<string, number> {
+  return Object.fromEntries((list || []).map(h => [h.value, h.count]));
 }
 
 function assert(name: string, actual: any, expected: any): void {
@@ -145,11 +161,11 @@ async function main(): Promise<void> {
   // mongo 版 limitDef 默认 1（不传 limit 只取一条），这里默认注入 10，与多命中断言相配
   const names = async (c: Chaser, params: any): Promise<string[]> => {
     const r = await c.search({ limit: 10, ...params }, CTX as any);
-    return (r.items ?? []).map((d: any) => String(d.name)).sort();
+    return (r.list ?? []).map((d: any) => String(d.name)).sort();
   };
-  // counts 实际返回 Promise，类型签名是同步，统一 await
-  const counts = async (c: Chaser, params: any): Promise<any> => {
-    return await (c.counts(params, CTX as any) as unknown as Promise<any>);
+  // statis 实际返回 Promise，类型签名是同步，统一 await
+  const statis = async (c: Chaser, params: any): Promise<any> => {
+    return await (c.statis(params, CTX as any) as unknown as Promise<any>);
   };
   // 增量水位用：隔开相邻时间戳，避开毫秒取整的临界
   const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
@@ -159,8 +175,8 @@ async function main(): Promise<void> {
     catch (e: any) { return e?.code; }
   };
 
-  /* ---------- 1) 扁平组：initIndex -> add -> search / counts ---------- */
-  console.log('--- 1) 扁平组：initIndex -> add -> search / counts ---');
+  /* ---------- 1) 扁平组：initIndex -> add -> search / statis ---------- */
+  console.log('--- 1) 扁平组：initIndex -> add -> search / statis ---');
   await MF.deleteMany({});
   await cf.initIndex();   // 删后建，保证 ES 干净
 
@@ -176,16 +192,29 @@ async function main(): Promise<void> {
   assert('search find age >= 30', await names(cf, { find: { age: { $gte: 30 } } }), ['beta second', 'gamma third']);
   assert('search wd 命中全文合并字段', await names(cf, { wd: 'alpha' }), ['alpha first']);
 
-  const c1 = await counts(cf, { });
-  assert('counts total = 3', c1.total, 3);
-  assert('counts.status', c1.counts.status, { draft: 2, published: 1 });
-  assert('counts.role', c1.counts.role, { admin: 1, user: 2 });
-  assert('counts.age', c1.counts.age, { 20: 1, 30: 1, 40: 1 });
+  const c1 = await statis(cf, { });
+  assert('statis total = 3', c1.total, 3);
+  assert('statis.status', hitMap(c1.hits.status), { draft: 2, published: 1 });
+  assert('statis.role', hitMap(c1.hits.role), { admin: 1, user: 2 });
+  assert('statis.age', hitMap(c1.hits.age), { 20: 1, 30: 1, 40: 1 });
 
-  const c2 = await counts(cf, { sels: { status: ['draft'] } });
-  assert('counts sels 联动 total = 2', c2.total, 2);
-  assert('counts sels 已选字段自身不套用（全量分布）', c2.counts.status, { draft: 2, published: 1 });
-  assert('counts sels 其他字段套用（draft 内的 role）', c2.counts.role, { admin: 1, user: 1 });
+  const c2 = await statis(cf, { sels: { status: ['draft'] } });
+  assert('statis sels 联动 total = 2', c2.total, 2);
+  assert('statis sels 已选字段自身不套用（全量分布）', hitMap(c2.hits.status), { draft: 2, published: 1 });
+  assert('statis sels 其他字段套用（draft 内的 role）', hitMap(c2.hits.role), { admin: 1, user: 1 });
+
+  /* ---------- 1.5) refs：Chaser 复用脱离 Cradle 的补充函数 ---------- */
+  console.log('\n--- 1.5) refs：search / statis 补充关联 ---');
+  const r1s = await cf.search({ limit: 10, refs: true }, CTX as any);
+  assert('search refs 键为 status', Object.keys(r1s.refs || {}).sort(), ['status']);
+  assert('search refs.status 是行数组', Array.isArray(r1s.refs?.['status']), true);
+  assert('search refs.status 含 draft 草稿行', !!r1s.refs?.['status']?.find((r: any) => r._id === 'draft' && r.name === '草稿'), true);
+  assert('search refs.status 含 published 已发布行', !!r1s.refs?.['status']?.find((r: any) => r._id === 'published' && r.name === '已发布'), true);
+  const r1n = await cf.search({ limit: 10 }, CTX as any);
+  assert('search 默认不带 refs', r1n.refs, undefined);
+  const r1c = await statis(cf, { refs: true });
+  assert('statis refs.status 含 draft 草稿行', !!r1c.refs?.['status']?.find((r: any) => r._id === 'draft' && r.name === '草稿'), true);
+  assert('statis refs: { status: 1 } 命中', Object.keys((await statis(cf, { refs: { status: 1 } })).refs || {}).sort(), ['status']);
 
   /* ---------- 2) 扁平组：set / delAll ---------- */
   console.log('\n--- 2) 扁平组：set / delAll ---');
@@ -199,13 +228,13 @@ async function main(): Promise<void> {
   await refresh(cf);
   assert('delAll 后 total = 2', (await cf.search({ }, CTX as any)).total, 2);
 
-  const c3 = await counts(cf, { });
-  assert('counts total = 2', c3.total, 2);
-  assert('counts.status', c3.counts.status, { draft: 2 });
-  assert('counts.age', c3.counts.age, { 25: 1, 30: 1 });
+  const c3 = await statis(cf, { });
+  assert('statis total = 2', c3.total, 2);
+  assert('statis.status', hitMap(c3.hits.status), { draft: 2 });
+  assert('statis.age', hitMap(c3.hits.age), { 25: 1, 30: 1 });
 
-  /* ---------- 3) nested 组：initIndex -> add -> search / counts ---------- */
-  console.log('\n--- 3) nested 组：initIndex -> add -> search / counts ---');
+  /* ---------- 3) nested 组：initIndex -> add -> search / statis ---------- */
+  console.log('\n--- 3) nested 组：initIndex -> add -> search / statis ---');
   await MN.deleteMany({});
   await cn.initIndex();
 
@@ -222,15 +251,15 @@ async function main(): Promise<void> {
   assert('search 无同元素满足 tag = y 且 qty = 5 -> 空', await names(cn, { find: { 'works.tag': 'y', 'works.qty': 5 } }), [ ]);
   assert('search wd 命中', await names(cn, { wd: 'three' }), ['job three']);
 
-  const c4 = await counts(cn, { });
-  assert('counts total = 3', c4.total, 3);
-  assert('counts.status', c4.counts.status, { a: 2, b: 1 });
+  const c4 = await statis(cn, { });
+  assert('statis total = 3', c4.total, 3);
+  assert('statis.status', hitMap(c4.hits.status), { a: 2, b: 1 });
   // works.tag 走 reverse_nested 取父文档数；job three 无 works 记缺失空串键
-  assert('counts works.tag（父文档数 + 缺失）', c4.counts['works.tag'], { x: 2, y: 1, '': 1 });
+  assert('statis works.tag（父文档数 + 缺失）', hitMap(c4.hits['works.tag']), { x: 2, y: 1, '': 1 });
 
-  const c5 = await counts(cn, { sels: { status: ['a'] } });
-  assert('counts sels total = 2', c5.total, 2);
-  assert('counts sels works.tag', c5.counts['works.tag'], { x: 1, y: 1, '': 1 });
+  const c5 = await statis(cn, { sels: { status: ['a'] } });
+  assert('statis sels total = 2', c5.total, 2);
+  assert('statis sels works.tag', hitMap(c5.hits['works.tag']), { x: 1, y: 1, '': 1 });
 
   /* ---------- 4) syncDocs 直接文档同步 ---------- */
   console.log('\n--- 4) syncDocs 直接文档同步 ---');
@@ -305,7 +334,7 @@ async function main(): Promise<void> {
   assert('syncFind 统计（z1 转 delete，z2 覆写）', { total: st7.total, indexed: st7.indexed, deleted: st7.deleted, failed: st7.failed },
     { total: 2, indexed: 1, deleted: 1, failed: 0 });
   assert('伪删记录被清掉：total = 1', (await cz.search({ }, CTX as any)).total, 1);
-  assert('counts total = 1', (await counts(cz, { })).total, 1);
+  assert('statis total = 1', (await statis(cz, { })).total, 1);
   assert('mongo 伪删记录保留', await MZ.countDocuments({ }), 2);
 
   /* ---------- 8) 任务 13：syncable / select:false / textable / 分词器 ---------- */
@@ -379,12 +408,12 @@ async function main(): Promise<void> {
 
   const hidHit = await cp.search({ find: { hidden: 'hid-one' }, limit: 10 }, CTX as any);
   assert('select:false 字段可查', hidHit.total, 1);
-  assert('items 默认不含 select:false 字段', (hidHit.items?.[0] as any)?.hidden, undefined);
+  assert('list 默认不含 select:false 字段', (hidHit.list?.[0] as any)?.hidden, undefined);
   const hidCol = await cp.search({ find: { hidden: 'hid-one' }, cols: { hidden: 1 }, limit: 10 }, CTX as any);
-  assert('cols 指定可取出 select:false 字段', (hidCol.items?.[0] as any)?.hidden, 'hid-one');
+  assert('cols 指定可取出 select:false 字段', (hidCol.list?.[0] as any)?.hidden, 'hid-one');
 
-  const c8 = await counts(cp, { });
-  assert('counts.status', c8.counts.status, { draft: 1 });
+  const c8 = await statis(cp, { });
+  assert('statis.status', hitMap(c8.hits.status), { draft: 1 });
 
   // $search：字段级分词匹配，符号对齐 mongo 的 $text.$search（mongo 社区版无此能力）
   await (cp.add({ name: 'body two', status: 'published', body: 'hello big world' }) as unknown as Promise<[any, string]>);
@@ -484,7 +513,7 @@ async function main(): Promise<void> {
   });
   await refresh(ct);
   const orphanHit = await ct.search({ find: { name: 'orphan one' }, limit: 10 }, CTX as any);
-  assert('孤立记录 ES 命中但回 mongo 丢弃', { total: orphanHit.total, items: orphanHit.items }, { total: 1, items: [ ] });
+  assert('孤立记录 ES 命中但回 mongo 丢弃', { total: orphanHit.total, list: orphanHit.list }, { total: 1, list: [ ] });
 
   const st11d = await ct.syncFind(undefined, { refresh: 'wait_for' });   // 全量：补齐 + 收尾 purge
   assert('全量同步清掉孤立记录', { total: st11d.total, indexed: st11d.indexed, deleted: st11d.deleted, failed: st11d.failed },
@@ -514,9 +543,9 @@ async function main(): Promise<void> {
   const st11e = await ct.syncFind(undefined, { refresh: 'wait_for' });
   assert('重建后全量回填', { total: st11e.total, indexed: st11e.indexed, deleted: st11e.deleted, failed: st11e.failed },
     { total: 4, indexed: 4, deleted: 0, failed: 0 });
-  const c11 = await counts(ct, { });
-  assert('重建后 counts.total', c11.total, 4);
-  assert('重建后 counts.status', c11.counts.status, { on: 2, off: 2 });
+  const c11 = await statis(ct, { });
+  assert('重建后 statis.total', c11.total, 4);
+  assert('重建后 statis.status', hitMap(c11.hits.status), { on: 2, off: 2 });
 
   /* ---------- 收尾 ---------- */
   await Promise.all([ cf, cn, cs, cz, cp, cplain, cm2, ct ].map(c => c.dropIndex()));

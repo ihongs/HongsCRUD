@@ -1,6 +1,6 @@
 {
   "name": "hongs-crud",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Hong's CRUD library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,15 +9,15 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./search": {
-      "types": "./dist/search/index.d.ts",
-      "default": "./dist/search/index.js"
+    "./es": {
+      "types": "./dist/es/index.d.ts",
+      "default": "./dist/es/index.js"
     }
   },
   "typesVersions": {
     "*": {
-      "search": [
-        "dist/search/index.d.ts"
+      "es": [
+        "dist/es/index.d.ts"
       ]
     }
   },
@@ -28,8 +28,7 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "test:crud": "tsc -p tsconfig.test.json && node dist-test/test/crud.js",
-    "test:counts": "tsc -p tsconfig.test.json && node dist-test/test/counts.js",
-    "test:chaser": "tsc -p tsconfig.test.json && node dist-test/test/chaser.js"
+    "test:es": "tsc -p tsconfig.test.json && node dist-test/test/es.js"
   },
   "peerDependencies": {
     "mongoose": "^7.0.0 || ^8.0.0",
