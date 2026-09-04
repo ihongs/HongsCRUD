@@ -805,15 +805,20 @@ export async function fillRefs(
   refIds  : Record<string, any[]>,
   ctx    ?: Context,
 ): Promise<Record<string, any[]>> {
-  const keyMap: Record<string, RefPath> = {};
   // 同聚集名（key）的多字段共享首个 ref 配置（method/params 等）
+  const keyMap: Record<string, RefPath> = {};
   for (const rp of refPaths) if (! keyMap[rp.key]) keyMap[rp.key] = rp;
 
+  // 挑选出需要关联的
   const keys = Object.keys(refIds).filter(k => {
     const rp = keyMap[k];
     return !! (rp && rp.ref.method && refIds[k].length);
   });
-  const refs: Record<string, any[]> = {};
+
+  // 增加请求来源标识
+  const ctxs = {...(ctx || {}), src: 'ref'};
+
+  const refs : Record <string, any[]> = { };
 
   await Promise.all(keys.map(async k => {
     const rp = keyMap[k];
@@ -822,7 +827,7 @@ export async function fillRefs(
       limit: vals.length, // 注入取数条数防默认截断，可被 params 覆盖
       ...(rp.ref.params || {}),
       [rp.ref.idParam || 'id']: vals,
-    }, ctx || {});
+    }, ctxs);
     refs[k] = Array.isArray(res) ? res : (res && res[rp.ref.listKey || 'list']) || [];
   }));
 
