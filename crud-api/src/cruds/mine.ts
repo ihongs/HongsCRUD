@@ -9,8 +9,8 @@ import {
   SearchResult,
   UpdateResult,
   SchemaResult,
-  CountsParams,
-  CountsResult,
+  StatisParams,
+  StatisResult,
 } from 'hongs-crud';
 import { User, UserApiKey, genApiKey } from './user';
 
@@ -32,7 +32,7 @@ function requireUid(ctx: Context, action: string): string {
 export class Mine extends User implements Crud {
   callable = ['search', 'update'];   // 只允许查 & 改自己
 
-  /* ----- create / delete / schema / counts：不可调用 ----- */
+  /* ----- create / delete / schema / statis：不可调用 ----- */
 
   create(_params: any, _ctx: Context): CreateResult {
     throw new CrudError('"mine.create" is not supported.', CrudErrno.METHOD_MISSING);
@@ -46,8 +46,8 @@ export class Mine extends User implements Crud {
     throw new CrudError('"mine.schema" is not supported.', CrudErrno.METHOD_MISSING);
   }
 
-  counts(_params: CountsParams, _ctx: Context): CountsResult {
-    throw new CrudError('"mine.counts" is not supported.', CrudErrno.METHOD_MISSING);
+  statis(_params: StatisParams, _ctx: Context): StatisResult {
+    throw new CrudError('"mine.statis" is not supported.', CrudErrno.METHOD_MISSING);
   }
 
   /* ----- search：_id === uid ----- */
@@ -92,7 +92,7 @@ export const mine = new Mine();
 export class MineApiKey extends UserApiKey implements Crud {
   callable = ['search', 'create', 'delete'];   // 只允许查 & 加 & 删
 
-  /* ----- update / schema / counts：不可调用 ----- */
+  /* ----- update / schema / statis：不可调用 ----- */
 
   update(_params: any, _ctx: Context): UpdateResult {
     throw new CrudError('"mineApiKey.update" is not supported.', CrudErrno.METHOD_MISSING);
@@ -102,8 +102,8 @@ export class MineApiKey extends UserApiKey implements Crud {
     throw new CrudError('"mineApiKey.schema" is not supported.', CrudErrno.METHOD_MISSING);
   }
 
-  counts(_params: CountsParams, _ctx: Context): CountsResult {
-    throw new CrudError('"mineApiKey.counts" is not supported.', CrudErrno.METHOD_MISSING);
+  statis(_params: StatisParams, _ctx: Context): StatisResult {
+    throw new CrudError('"mineApiKey.statis" is not supported.', CrudErrno.METHOD_MISSING);
   }
 
   /* ----- create：userId = uid, app = 'sk'；强制生成 key 并返回；expiresAt 按 schema.skExpires 推算 ----- */
