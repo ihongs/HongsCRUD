@@ -452,6 +452,8 @@ async function dispatch(req: RpcRequest, ctx: Context): Promise<RpcResponse> {
     return { jsonrpc: '2.0', error: {code: -32600, message: 'Invalid Request: method required!'}, id };
   }
 
+  ctx.via = 'rpc'; // 标记为 RPC 调用
+
   try {
     const result = await callFunc(req.method, req.params || {}, ctx);
     return { jsonrpc: '2.0', result, id };
