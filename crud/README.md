@@ -815,25 +815,22 @@ await userCrud.syncFind();
 `Roster` 是带有效期的键值存取接口：`set` 落一条记录，`get` 取值，过期视同不存在。适合验证码、上传令牌、防重放 nonce 等短命数据。接口与注册器从 subpath `hongs-crud/kv` 引入，实现在 `hongs-crud/kv/mongo`（mongoose）与 `hongs-crud/kv/redis`（node-redis v4），按需选用，主入口 `hongs-crud` 均不含：
 
 ```ts
-import { regRoster, getRoster } from 'hongs-crud/kv';
-import { MongoRoster } from 'hongs-crud/kv/mongo';
+import kv from 'hongs-crud/kv';
 
-regRoster(new MongoRoster());          // 注册全局实现（单例）
-const roster = getRoster();            // 获取，未注册且未设 KV_ROSTER 时抛 INTERNEL_ERROR
-
-await roster.set('token:abc', { uid: 1 }, 300);   // 300 秒后失效
-await roster.get('token:abc');                    // → { uid: 1 }
-await roster.getRecord('token:abc');              // → { key, value, expiresAt, createdAt, updatedAt }
+await kv.set('token:abc', { uid: 1 }, 300);       // 300 秒后失效
+await kv.get('token:abc');                        // → { uid: 1 }
+await kv.getAll('token:abc');                     // → { key, value, expiresAt, createdAt, updatedAt }
 ```
 
-`getRoster` 亦为本模块默认导出，导入时可任取名字：`import roster from 'hongs-crud/kv'`。
-
-除手动 `regRoster` 外，`getRoster()` 未注册时会读环境变量 `KV_ROSTER` 自动加载注册，代码里无需引用实现类：
-
-```ts
-// 环境变量：KV_ROSTER=hongs-crud/kv/mongo
-const roster = getRoster();   // 未注册时按 KV_ROSTER 动态 require 并无参构造注册（单例）
-```
+| 方法 | 说明 |
+|---|---|
+| `set(key, value, expires)` | 写入并覆盖同 key 记录；`expires` 为 `Date` 表示到期时间，为 `number` 表示多少秒后失效 |
+| `get(key)` | 取值，过期或不存在返回 `null` |
+| `getAll(key)` | 取完整记录 `{ key, value, expiresAt, createdAt, updatedAt }` |
+| `getAndDel(key)` | 取值并删除，过期或不存在返回 `null` |
+| `getAllAndDel(key)` | 取完整记录并删除 |
+| `del(key)` | 删除记录，不存在时无效果 |
+| `cleanup(before?)` | 清理 `expiresAt` 早于 `before`（默认 7 天前）的记录，返回删除数，Redis 自动删除故总是返回 0 |
 
 `KV_ROSTER` 值为模块路径（取其默认导出为实现类）：模块以 `./`、`../` 开头时相对 `process.cwd()` 解析，其余按包名或绝对路径加载。实现类以无参构造自行读环境变量完成配置：
 
@@ -844,21 +841,13 @@ const roster = getRoster();   // 未注册时按 KV_ROSTER 动态 require 并无
 | `KV_ROSTER_REDIS_URL` | RedisRoster 自建客户端连接地址 | `redis://127.0.0.1:6379` |
 | `KV_ROSTER_REDIS_PRE` | RedisRoster 键前缀 | 空串（不隔离） |
 
-| 方法 | 说明 |
-|---|---|
-| `set(key, value, expires)` | 写入并覆盖同 key 记录；`expires` 为 `Date` 表示到期时间，为 `number` 表示多少秒后失效 |
-| `get(key)` | 取值，过期或不存在返回 `null` |
-| `getRecord(key)` | 取完整记录 `{ key, value, expiresAt, createdAt, updatedAt }` |
-| `getAndRemove(key)` | 取值并删除（一次性令牌），过期或不存在返回 `null` |
-| `getRecordAndRemove(key)` | 取完整记录并删除 |
-| `remove(key)` | 删除记录，不存在时无效果 |
-| `cleanup(before?)` | 清理 `expiresAt` 早于 `before`（默认 7 天前）的记录，返回删除数 |
+亦可在代码里显式注册（优先于 `KV_ROSTER`）：`regRoster(new YourRoster())`，之后 `getRoster()` 获取全局单例。未设置且未注册时首次调用抛 `INTERNEL_ERROR`。
 
 ### 5.1 MongoRoster（hongs-crud/kv/mongo）
 
 基于 mongoose（主库已有 peer 依赖，无需额外安装）。`new MongoRoster(collection?)`，`collection` 未传时读 `KV_ROSTER_COLLECTION`，默认集合 `rosters`。
 
-> 过期记录不即时删除：`get` / `getRecord` 查询时按 `expiresAt` 过滤即可，无需写后清理；记录量大了再定期（如每日）调 `cleanup()`。同 key 重复 `set` 为覆盖语义，`value` 与 `expiresAt` 一并更新，`createdAt` 保留首次。
+> 过期记录不即时删除：`get` / `getAll` 查询时按 `expiresAt` 过滤即可，无需写后清理；记录量大了再定期（如每日）调 `cleanup()`。同 key 重复 `set` 为覆盖语义，`value` 与 `expiresAt` 一并更新，`createdAt` 保留首次。
 
 ### 5.2 RedisRoster（hongs-crud/kv/redis）
 

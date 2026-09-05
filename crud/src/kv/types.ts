@@ -17,15 +17,15 @@ export interface Roster {
   /** 取值，过期或不存在返回 null */
   get(key: string): Promise<any | null>;
   /** 取完整记录，过期或不存在返回 null */
-  getRecord(key: string): Promise<Rowset | null>;
-  /** 取值并删除（一次性令牌），过期或不存在返回 null */
-  getAndRemove(key: string): Promise<any | null>;
-  /** 取完整记录并删除 */
-  getRecordAndRemove(key: string): Promise<Rowset | null>;
+  getAll(key: string): Promise<Rowset | null>;
+  /** 取值并删除，过期或不存在返回 null */
+  getAndDel(key: string): Promise<any | null>;
+  /** 取完整记录并删除，过期或不存在返回 null */
+  getAllAndDel(key: string): Promise<Rowset | null>;
   /** 写入并覆盖同 key 记录 */
   set(key: string, value: any, expires: Date | number): Promise<void>;
   /** 删除记录，不存在时无效果 */
-  remove(key: string): Promise<void>;
+  del(key: string): Promise<void>;
   /** 清理过期记录，返回删除数；redis 实现由 TTL 自管，恒返回 0 */
   cleanup(before?: Date): Promise<number>;
 }

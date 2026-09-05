@@ -9,7 +9,7 @@ import { RedisRoster } from '../src/kv/redis';
 const REDIS_URL = 'redis://127.0.0.1:6379';
 const PREFIX    = 'test:roster:';
 
-// 测试用到的全部键，开头结尾各清一遍（remove 幂等）
+// 测试用到的全部键，开头结尾各清一遍（del 幂等）
 const KEYS = ['kv:str', 'kv:date', 'kv:over', 'kv:arr', 'kv:obj', 'kv:rec',
   'kv:gone', 'kv:gone2', 'kv:old', 'kv:c1s', 'kv:del', 'kv:shared'];
 
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   const roster = new RedisRoster(redis, PREFIX);
 
   // 清场
-  for (const k of KEYS) await roster.remove(k);
+  for (const k of KEYS) await roster.del(k);
 
   /* ---------- 1) set / get ---------- */
   console.log('--- 1) set / get：number 与 Date 有效期、覆盖、值类型 ---');
@@ -77,46 +77,46 @@ async function main(): Promise<void> {
 
   assert('不存在的键返回 null', await roster.get('kv:none'), null);
 
-  /* ---------- 2) getRecord：完整记录 ---------- */
-  console.log('\n--- 2) getRecord：完整记录 ---');
+  /* ---------- 2) getAll：完整记录 ---------- */
+  console.log('\n--- 2) getAll：完整记录 ---');
   await roster.set('kv:rec', 'v1', 60);
-  const rec = await roster.getRecord('kv:rec');
-  assert('getRecord 返回键', rec?.key, 'kv:rec');
-  assert('getRecord 返回值', rec?.value, 'v1');
-  assert('getRecord 的 expiresAt 在未来', rec!.expiresAt instanceof Date && rec!.expiresAt.getTime() > Date.now(), true);
-  assert('getRecord 的 createdAt 为时间戳', rec!.createdAt instanceof Date && ! isNaN(rec!.createdAt.getTime()), true);
-  assert('getRecord 的 updatedAt 为时间戳', rec!.updatedAt instanceof Date && ! isNaN(rec!.updatedAt.getTime()), true);
-  assert('getRecord 不存在的键返回 null', await roster.getRecord('kv:none'), null);
+  const rec = await roster.getAll('kv:rec');
+  assert('getAll 返回键', rec?.key, 'kv:rec');
+  assert('getAll 返回值', rec?.value, 'v1');
+  assert('getAll 的 expiresAt 在未来', rec!.expiresAt instanceof Date && rec!.expiresAt.getTime() > Date.now(), true);
+  assert('getAll 的 createdAt 为时间戳', rec!.createdAt instanceof Date && ! isNaN(rec!.createdAt.getTime()), true);
+  assert('getAll 的 updatedAt 为时间戳', rec!.updatedAt instanceof Date && ! isNaN(rec!.updatedAt.getTime()), true);
+  assert('getAll 不存在的键返回 null', await roster.getAll('kv:none'), null);
 
-  /* ---------- 3) getAndRemove / getRecordAndRemove ---------- */
-  console.log('\n--- 3) getAndRemove / getRecordAndRemove ---');
+  /* ---------- 3) getAndDel / getAllAndDel ---------- */
+  console.log('\n--- 3) getAndDel / getAllAndDel ---');
   await roster.set('kv:gone', 'once', 60);
-  assert('getAndRemove 首次取到值', await roster.getAndRemove('kv:gone'), 'once');
-  assert('getAndRemove 二次为 null', await roster.getAndRemove('kv:gone'), null);
+  assert('getAndDel 首次取到值', await roster.getAndDel('kv:gone'), 'once');
+  assert('getAndDel 二次为 null', await roster.getAndDel('kv:gone'), null);
 
   await roster.set('kv:gone2', { a: 1 }, 60);
-  const rec2 = await roster.getRecordAndRemove('kv:gone2');
-  assert('getRecordAndRemove 返回记录的键与值', { key: rec2?.key, value: rec2?.value }, { key: 'kv:gone2', value: { a: 1 } });
-  assert('getRecordAndRemove 后记录已删', await roster.get('kv:gone2'), null);
+  const rec2 = await roster.getAllAndDel('kv:gone2');
+  assert('getAllAndDel 返回记录的键与值', { key: rec2?.key, value: rec2?.value }, { key: 'kv:gone2', value: { a: 1 } });
+  assert('getAllAndDel 后记录已删', await roster.get('kv:gone2'), null);
 
   /* ---------- 4) 过期视同不存在 ---------- */
   console.log('\n--- 4) 过期视同不存在 ---');
   await roster.set('kv:old', 'x', new Date(Date.now() - 1000));
   assert('set 过去时间后 get 为 null', await roster.get('kv:old'), null);
-  assert('set 过去时间后 getRecord 为 null', await roster.getRecord('kv:old'), null);
+  assert('set 过去时间后 getAll 为 null', await roster.getAll('kv:old'), null);
 
   await roster.set('kv:c1s', 'y', 1);
   assert('未过期前可取到', await roster.get('kv:c1s'), 'y');
   await sleep(1100);
   assert('到期后 get 为 null（TTL 由 Redis 删键）', await roster.get('kv:c1s'), null);
 
-  /* ---------- 5) remove ---------- */
-  console.log('\n--- 5) remove：删除与幂等 ---');
+  /* ---------- 5) del ---------- */
+  console.log('\n--- 5) del：删除与幂等 ---');
   await roster.set('kv:del', 'z', 60);
-  await roster.remove('kv:del');
-  assert('remove 后取不到', await roster.get('kv:del'), null);
-  await roster.remove('kv:del');   // 不存在时无效果
-  assert('remove 幂等：不存在的键不抛错', await roster.get('kv:del'), null);
+  await roster.del('kv:del');
+  assert('del 后取不到', await roster.get('kv:del'), null);
+  await roster.del('kv:del');   // 不存在时无效果
+  assert('del 幂等：不存在的键不抛错', await roster.get('kv:del'), null);
 
   /* ---------- 6) 键隔离（prefix） ---------- */
   console.log('\n--- 6) 键隔离：prefix 隔开不同实例 ---');
@@ -145,9 +145,9 @@ async function main(): Promise<void> {
   assert('KV_ROSTER_REDIS_PRE 生效：另一前缀取不到', await roster.get('kv:auto'), null);
 
   /* ---------- 收尾 ---------- */
-  for (const k of KEYS) await roster.remove(k);
-  await roster2.remove('kv:shared');
-  await auto.remove('kv:auto');
+  for (const k of KEYS) await roster.del(k);
+  await roster2.del('kv:shared');
+  await auto.del('kv:auto');
   await (auto as any)._redis.disconnect();   // 断开自动注册自建的连接，避免进程挂着
   await redis.disconnect();
   console.log('\nDone.');

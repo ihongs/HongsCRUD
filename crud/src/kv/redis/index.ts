@@ -42,7 +42,7 @@ export class RedisRoster implements Roster {
   }
 
   // 获取记录 {key, value, expiresAt, createdAt, updatedAt}，过期视同不存在
-  async getRecord(key: string): Promise<Rowset | null> {
+  async getAll(key: string): Promise<Rowset | null> {
     await this._ensure();
     const d = await this._redis.hGetAll(this._key(key));
     if (! d || ! d.expiresAt) return null;
@@ -57,22 +57,22 @@ export class RedisRoster implements Roster {
   }
 
   // 获取记录并删除
-  async getRecordAndRemove(key: string): Promise<Rowset | null> {
-    const record = await this.getRecord(key);
+  async getAllAndDel(key: string): Promise<Rowset | null> {
+    const record = await this.getAll(key);
     if (! record) return null;
-    await this.remove(key);
+    await this.del(key);
     return record;
   }
 
   // 获取值
   async get(key: string): Promise<any | null> {
-    const record = await this.getRecord(key);
+    const record = await this.getAll(key);
     return record ? record.value : null;
   }
 
   // 获取值并删除
-  async getAndRemove(key: string): Promise<any | null> {
-    const record = await this.getRecordAndRemove(key);
+  async getAndDel(key: string): Promise<any | null> {
+    const record = await this.getAllAndDel(key);
     return record ? record.value : null;
   }
 
@@ -94,7 +94,7 @@ export class RedisRoster implements Roster {
   }
 
   // 删除记录，不存在时无效果
-  async remove(key: string): Promise<void> {
+  async del(key: string): Promise<void> {
     await this._ensure();
     await this._redis.del(this._key(key));
   }

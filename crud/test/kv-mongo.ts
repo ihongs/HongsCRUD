@@ -1,9 +1,9 @@
 // Roster 集成测试（src/kv 注册器 + src/kv/mongo 的 MongoRoster）
-// 运行：npm run test:kv
+// 运行：npm run test:kv:mongo
 // 前置：本地 MongoDB（mongodb://127.0.0.1:27017）已启动
 
 import mongoose from 'mongoose';
-import rosterDefault, { regRoster, getRoster } from '../src/kv';
+import kv, { regRoster, getRoster } from '../src/kv';
 import { MongoRoster } from '../src/kv/mongo';
 
 const MONGO_URI  = 'mongodb://127.0.0.1:27017/test';
@@ -47,17 +47,19 @@ async function main(): Promise<void> {
   const sleep  = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
   const roster = new MongoRoster(COLLECTION);
 
-  /* ---------- 0) 注册器：regRoster / getRoster ---------- */
-  console.log('--- 0) 注册器：regRoster / getRoster ---');
+  /* ---------- 0) 注册器：regRoster / getRoster / 默认导出 ---------- */
+  console.log('--- 0) 注册器：regRoster / getRoster / 默认导出 ---');
   let errCode: number | undefined;
   try { getRoster(); } catch (e: any) { errCode = e?.code; }
   assert('getRoster 未注册抛 INTERNEL_ERROR', errCode, -32603);
-  assert('默认导出与 getRoster 为同一函数（导入可任取名）', rosterDefault === getRoster, true);
   regRoster(roster);
   assert('regRoster 后 getRoster 返回同一实例', getRoster() === roster, true);
   const viaGet = getRoster();
   await viaGet.set('kv:reg', 'ok', 60);
   assert('getRoster 单例可直接存取', await roster.get('kv:reg'), 'ok');
+  await kv.set('kv:def', 'ok', 60);   // 默认导出惰性取 getRoster，可直接使用
+  assert('默认导出 kv 可直接存取', await kv.get('kv:def'), 'ok');
+  assert('默认导出 kv 与注册器为同一单例', await kv.get('kv:reg'), 'ok');
 
   /* ---------- 1) set / get ---------- */
   console.log('\n--- 1) set / get：number 与 Date 有效期、覆盖、值类型 ---');
@@ -77,46 +79,46 @@ async function main(): Promise<void> {
 
   assert('不存在的键返回 null', await roster.get('kv:none'), null);
 
-  /* ---------- 2) getRecord：完整记录 ---------- */
-  console.log('\n--- 2) getRecord：完整记录 ---');
+  /* ---------- 2) getAll：完整记录 ---------- */
+  console.log('\n--- 2) getAll：完整记录 ---');
   await roster.set('kv:rec', 'v1', 60);
-  const rec = await roster.getRecord('kv:rec');
-  assert('getRecord 返回键', rec?.key, 'kv:rec');
-  assert('getRecord 返回值', rec?.value, 'v1');
-  assert('getRecord 的 expiresAt 在未来', rec!.expiresAt instanceof Date && rec!.expiresAt.getTime() > Date.now(), true);
-  assert('getRecord 的 createdAt 为时间戳', rec!.createdAt instanceof Date && ! isNaN(rec!.createdAt.getTime()), true);
-  assert('getRecord 的 updatedAt 为时间戳', rec!.updatedAt instanceof Date && ! isNaN(rec!.updatedAt.getTime()), true);
-  assert('getRecord 不存在的键返回 null', await roster.getRecord('kv:none'), null);
+  const rec = await roster.getAll('kv:rec');
+  assert('getAll 返回键', rec?.key, 'kv:rec');
+  assert('getAll 返回值', rec?.value, 'v1');
+  assert('getAll 的 expiresAt 在未来', rec!.expiresAt instanceof Date && rec!.expiresAt.getTime() > Date.now(), true);
+  assert('getAll 的 createdAt 为时间戳', rec!.createdAt instanceof Date && ! isNaN(rec!.createdAt.getTime()), true);
+  assert('getAll 的 updatedAt 为时间戳', rec!.updatedAt instanceof Date && ! isNaN(rec!.updatedAt.getTime()), true);
+  assert('getAll 不存在的键返回 null', await roster.getAll('kv:none'), null);
 
-  /* ---------- 3) getAndRemove / getRecordAndRemove ---------- */
-  console.log('\n--- 3) getAndRemove / getRecordAndRemove ---');
+  /* ---------- 3) getAndDel / getAllAndDel ---------- */
+  console.log('\n--- 3) getAndDel / getAllAndDel ---');
   await roster.set('kv:gone', 'once', 60);
-  assert('getAndRemove 首次取到值', await roster.getAndRemove('kv:gone'), 'once');
-  assert('getAndRemove 二次为 null', await roster.getAndRemove('kv:gone'), null);
+  assert('getAndDel 首次取到值', await roster.getAndDel('kv:gone'), 'once');
+  assert('getAndDel 二次为 null', await roster.getAndDel('kv:gone'), null);
 
   await roster.set('kv:gone2', { a: 1 }, 60);
-  const rec2 = await roster.getRecordAndRemove('kv:gone2');
-  assert('getRecordAndRemove 返回记录的键与值', { key: rec2?.key, value: rec2?.value }, { key: 'kv:gone2', value: { a: 1 } });
-  assert('getRecordAndRemove 后记录已删', await roster.get('kv:gone2'), null);
+  const rec2 = await roster.getAllAndDel('kv:gone2');
+  assert('getAllAndDel 返回记录的键与值', { key: rec2?.key, value: rec2?.value }, { key: 'kv:gone2', value: { a: 1 } });
+  assert('getAllAndDel 后记录已删', await roster.get('kv:gone2'), null);
 
   /* ---------- 4) 过期视同不存在 ---------- */
   console.log('\n--- 4) 过期视同不存在 ---');
   await roster.set('kv:old', 'x', new Date(Date.now() - 1000));
   assert('set 过去时间后 get 为 null', await roster.get('kv:old'), null);
-  assert('set 过去时间后 getRecord 为 null', await roster.getRecord('kv:old'), null);
+  assert('set 过去时间后 getAll 为 null', await roster.getAll('kv:old'), null);
 
   await roster.set('kv:c1s', 'y', 1);
   assert('未过期前可取到', await roster.get('kv:c1s'), 'y');
   await sleep(1100);
   assert('到期后 get 为 null', await roster.get('kv:c1s'), null);
 
-  /* ---------- 5) remove ---------- */
-  console.log('\n--- 5) remove：删除与幂等 ---');
+  /* ---------- 5) del ---------- */
+  console.log('\n--- 5) del：删除与幂等 ---');
   await roster.set('kv:del', 'z', 60);
-  await roster.remove('kv:del');
-  assert('remove 后取不到', await roster.get('kv:del'), null);
-  await roster.remove('kv:del');   // 不存在时无效果
-  assert('remove 幂等：不存在的键不抛错', await roster.get('kv:del'), null);
+  await roster.del('kv:del');
+  assert('del 后取不到', await roster.get('kv:del'), null);
+  await roster.del('kv:del');   // 不存在时无效果
+  assert('del 幂等：不存在的键不抛错', await roster.get('kv:del'), null);
 
   /* ---------- 6) 实例间共享（model 缓存） ---------- */
   console.log('\n--- 6) 实例间共享：同集合另一实例读到同一数据 ---');

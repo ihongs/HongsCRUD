@@ -50,7 +50,7 @@
     "check": "tsc --noEmit",
     "test:crud": "tsc -p tsconfig.test.json && node dist-test/test/crud.js",
     "test:es": "tsc -p tsconfig.test.json && node dist-test/test/es.js",
-    "test:kv:env": "tsc -p tsconfig.test.json && node dist-test/test/kv-env.js",
+    "test:kv": "tsc -p tsconfig.test.json && node dist-test/test/kv.js",
     "test:kv:mongo": "tsc -p tsconfig.test.json && node dist-test/test/kv-mongo.js",
     "test:kv:redis": "tsc -p tsconfig.test.json && node dist-test/test/kv-redis.js"
   },
