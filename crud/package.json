@@ -1,6 +1,6 @@
 {
   "name": "hongs-crud",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Hong's CRUD library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

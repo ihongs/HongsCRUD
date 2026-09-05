@@ -290,7 +290,7 @@ export type Func = (
   ctx : Context
 ) => any;
 
-export type Sift = (
+export type Hook = (
   name: string,
   pms : Record<string, any>,
   ctx : Context,

@@ -4,7 +4,7 @@ import mongoose, { Schema, Model } from 'mongoose';
 import type {
   Crud,
   Func,
-  Sift,
+  Hook,
   Context,
   SoftDel,
   RefItem,
@@ -100,17 +100,17 @@ export function getRoleNames(): string[] {
   return Object.keys(ROLES);
 }
 
-/* ---------- Sifts ---------- */
+/* ---------- Hooks ---------- */
 
-const SIFTS: { sift: Sift; name?: string | RegExp }[] = [];
+const HOOKS: { hook: Hook; name?: string | RegExp }[] = [];
 
 /**
- * 注册 callFunc 过滤器，先注册的在外层
- * 过滤器包裹方法执行，按需干预输入输出或经 next 放行
+ * 注册 callFunc 钩子，先注册的在外层
+ * 钩子包裹方法执行，按需干预输入输出或经 next 放行
  * name 缺省匹配全部方法，为字符串时精确匹配方法名，为正则时匹配方法名
  */
-export function regSift(sift: Sift, name?: string | RegExp): void {
-  SIFTS.push({ sift, name });
+export function regHook(hook: Hook, name?: string | RegExp): void {
+  HOOKS.push({ hook, name });
 }
 
 /* ---------- Error ---------- */
@@ -632,7 +632,7 @@ export class Cradle implements Crud {
 export function callFunc(name: string, params: Record<string, any>, ctx: Context): any {
   // 1. 从 FUNCS 中查找并执行，可覆盖 model.method
   if (hasFunc(name)) {
-    return runSifts(name, params, ctx, (ps, cs) => getFunc(name)(ps, cs));
+    return runHooks(name, params, ctx, (ps, cs) => getFunc(name)(ps, cs));
   }
 
   // 2. 从 CRUDS 中查找并执行，仅放行 callable 的方法
@@ -647,31 +647,31 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
     const crud = getCrud( crudName );
     if (! crud.callable?.includes(funcName)) break X;
 
-    return runSifts(name, params, ctx, (ps, cs) => (crud as any)[funcName].call(crud, ps, cs));
+    return runHooks(name, params, ctx, (ps, cs) => (crud as any)[funcName].call(crud, ps, cs));
   }
 
   throw new CrudError(`Method "${name}" is not registered.`, CrudErrno.METHOD_MISSING);
 }
 
-function runSifts(name: string, params: Record<string, any>, ctx: Context, run: Func): any {
+function runHooks(name: string, params: Record<string, any>, ctx: Context, run: Func): any {
   const go = (i: number, ps: Record<string, any>, cs: Context): any => {
-    while (i < SIFTS.length && ! canSift(SIFTS[i].name, name)) i ++ ;
-    if (i >= SIFTS.length) return run(ps, cs);
+    while (i < HOOKS.length && ! canHook(HOOKS[i].name, name)) i ++ ;
+    if (i >= HOOKS.length) return run(ps, cs);
     const next: Func = (pms, ctx) => go(i + 1, pms || ps, ctx || cs);
-    return SIFTS[i].sift(name, ps, cs, next);
+    return HOOKS[i].hook(name, ps, cs, next);
   };
   return go(0, params, ctx);
 }
 
-function canSift(name: string | RegExp | undefined, curr: string): boolean {
+function canHook(name: string | RegExp | undefined, curr: string): boolean {
   if (name === undefined) return true;
   return typeof name === 'string' ? name === curr : name.test(curr);
 }
 
 /**
- * 权限检查过滤器：按 ctx.roles 调用 isPermitted，未授权抛 RIGHT_DEPRIVED
+ * 权限检查钩子：按 ctx.roles 调用 isPermitted，未授权抛 RIGHT_DEPRIVED
  */
-export function siftPermits (name: string, pms: Record<string, any>, ctx: Context, next: Func): any {
+export function hookPermits (name: string, pms: Record<string, any>, ctx: Context, next: Func): any {
   if (! isPermitted(name, ctx.roles || [])) {
     throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
   }
