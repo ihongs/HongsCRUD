@@ -12,12 +12,33 @@
     "./es": {
       "types": "./dist/es/index.d.ts",
       "default": "./dist/es/index.js"
+    },
+    "./kv": {
+      "types": "./dist/kv/index.d.ts",
+      "default": "./dist/kv/index.js"
+    },
+    "./kv/mongo": {
+      "types": "./dist/kv/mongo/index.d.ts",
+      "default": "./dist/kv/mongo/index.js"
+    },
+    "./kv/redis": {
+      "types": "./dist/kv/redis/index.d.ts",
+      "default": "./dist/kv/redis/index.js"
     }
   },
   "typesVersions": {
     "*": {
       "es": [
         "dist/es/index.d.ts"
+      ],
+      "kv": [
+        "dist/kv/index.d.ts"
+      ],
+      "kv/mongo": [
+        "dist/kv/mongo/index.d.ts"
+      ],
+      "kv/redis": [
+        "dist/kv/redis/index.d.ts"
       ]
     }
   },
@@ -28,22 +49,30 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "test:crud": "tsc -p tsconfig.test.json && node dist-test/test/crud.js",
-    "test:es": "tsc -p tsconfig.test.json && node dist-test/test/es.js"
+    "test:es": "tsc -p tsconfig.test.json && node dist-test/test/es.js",
+    "test:kv:env": "tsc -p tsconfig.test.json && node dist-test/test/kv-env.js",
+    "test:kv:mongo": "tsc -p tsconfig.test.json && node dist-test/test/kv-mongo.js",
+    "test:kv:redis": "tsc -p tsconfig.test.json && node dist-test/test/kv-redis.js"
   },
   "peerDependencies": {
+    "@elastic/elasticsearch": "^8.0.0",
     "mongoose": "^7.0.0 || ^8.0.0",
-    "@elastic/elasticsearch": "^8.0.0"
+    "redis": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "@elastic/elasticsearch": {
       "optional": true
+    },
+    "redis": {
+      "optional": true
     }
   },
   "devDependencies": {
-    "mongoose": "^8.0.0",
     "@elastic/elasticsearch": "^8.0.0",
+    "@types/node": "^20.0.0",
     "typescript": "^5.0.0",
-    "@types/node": "^20.0.0"
+    "mongoose": "^8.0.0",
+    "redis": "^4.7.1"
   },
   "license": "MIT"
 }

@@ -4,13 +4,15 @@
 
 另含可选的检索组件 `Chaser`（从 `hongs-crud/es` 引入），把 `search` / `statis` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 4 节。
 
+另含可选的键值组件 `Roster`（接口在 `hongs-crud/kv`，实现在 `hongs-crud/kv/mongo` 与 `hongs-crud/kv/redis`），基于 MongoDB 或 Redis 存取带有效期的键值记录，适合验证码、上传令牌等短命数据，见第 5 节。
+
 源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
 ```bash
 npm install hongs-crud
 ```
 
-> 依赖（peer）：mongoose `^7 || ^8`；`@elastic/elasticsearch` `^8`（可选，仅使用 ES 检索组件时需要）
+> 依赖（peer）：mongoose `^7 || ^8`；`@elastic/elasticsearch` `^8`（可选，仅使用 ES 检索组件时需要）；`redis` `^4`（可选，仅使用 KV 的 RedisRoster 时需要）
 
 ---
 
@@ -805,6 +807,74 @@ await userCrud.syncFind();
 ```
 
 > 注意：已存在的索引不会被 `Chaser` 自动改动，改过 Schema 后必须显式走上述流程，否则新字段查不到且没有任何报错。`pushMapping()` 必须由本方法推送而非手写 mapping：`keyword` 子字段、nested 结构、`dynamic: 'strict'` 等推导规则都在 `getMapping()` 里，手写极易与索引内的既有定义不一致。
+
+---
+
+## 5. KV 存储组件（Roster）
+
+`Roster` 是带有效期的键值存取接口：`set` 落一条记录，`get` 取值，过期视同不存在。适合验证码、上传令牌、防重放 nonce 等短命数据。接口与注册器从 subpath `hongs-crud/kv` 引入，实现在 `hongs-crud/kv/mongo`（mongoose）与 `hongs-crud/kv/redis`（node-redis v4），按需选用，主入口 `hongs-crud` 均不含：
+
+```ts
+import { regRoster, getRoster } from 'hongs-crud/kv';
+import { MongoRoster } from 'hongs-crud/kv/mongo';
+
+regRoster(new MongoRoster());          // 注册全局实现（单例）
+const roster = getRoster();            // 获取，未注册且未设 KV_ROSTER 时抛 INTERNEL_ERROR
+
+await roster.set('token:abc', { uid: 1 }, 300);   // 300 秒后失效
+await roster.get('token:abc');                    // → { uid: 1 }
+await roster.getRecord('token:abc');              // → { key, value, expiresAt, createdAt, updatedAt }
+```
+
+`getRoster` 亦为本模块默认导出，导入时可任取名字：`import roster from 'hongs-crud/kv'`。
+
+除手动 `regRoster` 外，`getRoster()` 未注册时会读环境变量 `KV_ROSTER` 自动加载注册，代码里无需引用实现类：
+
+```ts
+// 环境变量：KV_ROSTER=hongs-crud/kv/mongo
+const roster = getRoster();   // 未注册时按 KV_ROSTER 动态 require 并无参构造注册（单例）
+```
+
+`KV_ROSTER` 值为模块路径（取其默认导出为实现类）：模块以 `./`、`../` 开头时相对 `process.cwd()` 解析，其余按包名或绝对路径加载。实现类以无参构造自行读环境变量完成配置：
+
+| 环境变量 | 说明 | 默认值 |
+|---|---|---|
+| `KV_ROSTER` | 自动注册的模块（默认导出为实现类） | 未设置且未注册时 `getRoster()` 抛 `INTERNEL_ERROR` |
+| `KV_ROSTER_COLLECTION` | MongoRoster 存储集合 | `rosters` |
+| `KV_ROSTER_REDIS_URL` | RedisRoster 自建客户端连接地址 | `redis://127.0.0.1:6379` |
+| `KV_ROSTER_REDIS_PRE` | RedisRoster 键前缀 | 空串（不隔离） |
+
+| 方法 | 说明 |
+|---|---|
+| `set(key, value, expires)` | 写入并覆盖同 key 记录；`expires` 为 `Date` 表示到期时间，为 `number` 表示多少秒后失效 |
+| `get(key)` | 取值，过期或不存在返回 `null` |
+| `getRecord(key)` | 取完整记录 `{ key, value, expiresAt, createdAt, updatedAt }` |
+| `getAndRemove(key)` | 取值并删除（一次性令牌），过期或不存在返回 `null` |
+| `getRecordAndRemove(key)` | 取完整记录并删除 |
+| `remove(key)` | 删除记录，不存在时无效果 |
+| `cleanup(before?)` | 清理 `expiresAt` 早于 `before`（默认 7 天前）的记录，返回删除数 |
+
+### 5.1 MongoRoster（hongs-crud/kv/mongo）
+
+基于 mongoose（主库已有 peer 依赖，无需额外安装）。`new MongoRoster(collection?)`，`collection` 未传时读 `KV_ROSTER_COLLECTION`，默认集合 `rosters`。
+
+> 过期记录不即时删除：`get` / `getRecord` 查询时按 `expiresAt` 过滤即可，无需写后清理；记录量大了再定期（如每日）调 `cleanup()`。同 key 重复 `set` 为覆盖语义，`value` 与 `expiresAt` 一并更新，`createdAt` 保留首次。
+
+### 5.2 RedisRoster（hongs-crud/kv/redis）
+
+基于 node-redis v4（可选 peer 依赖，仅使用本实现时安装）。`new RedisRoster(client?, prefix?)`：`client` 未传时读 `KV_ROSTER_REDIS_URL` 自建客户端（默认 `redis://127.0.0.1:6379`），`prefix` 未传时读 `KV_ROSTER_REDIS_PRE`（默认不隔离），用于同 db 内多实例键隔离。自建或传入未连接的客户端时首次操作自动发起连接（惰性连接），传入已连接的客户端则直接使用：
+
+```ts
+import { createClient } from 'redis';
+import { regRoster } from 'hongs-crud/kv';
+import { RedisRoster } from 'hongs-crud/kv/redis';
+
+const client = createClient({ url: 'redis://127.0.0.1:6379' });
+await client.connect();
+regRoster(new RedisRoster(client, 'roster:'));
+```
+
+> 也可完全交给环境变量（`KV_ROSTER` + `KV_ROSTER_REDIS_URL` + `KV_ROSTER_REDIS_PRE`），`getRoster()` 自动注册，连客户端都无需自建。每键一个 hash（`value` / `expiresAt` / `createdAt` / `updatedAt`）并带 TTL，到期由 Redis 自身删除，无惰性留档，`cleanup()` 恒返回 0。
 
 ---
 
