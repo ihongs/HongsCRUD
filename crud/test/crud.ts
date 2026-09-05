@@ -295,18 +295,15 @@ async function main(): Promise<void> {
   // 未注册 hookPermits 时不做权限检查
   assert('未注册 hookPermits 时不做权限检查', await callFunc('test-hook-nop', { n: 1 }, CTX), { n: 1 });
   // 权限检查钩子（README 示例同款），缺省 name 作用于全部调用
-  regHook(hookPermits);
-  // 依次注册三个：字符串精确命中、正则命中调整输出、缺省全部放行
-  regHook(
-    async (name, params, ctx, next) => {
-      params.n = (params.n || 0) * 2;   // 输入干预
-      const res = await next(params, ctx);
-      return { n: res.n + 1 };          // 输出干预
-    },
-    'test-hook-pass'
-  );
-  regHook(async (name, params, ctx, next) => ({ ...await next(params, ctx), vip: true }), /^test-hook-vip$/);
-  regHook((name, params, ctx, next) => next(params, ctx));
+  regHook(undefined, hookPermits);
+  // 依次注册三个：字符串精确命中、正则命中调整输出、null 亦为通配
+  regHook('test-hook-pass', async (name, params, ctx, next) => {
+    params.n = (params.n || 0) * 2;   // 输入干预
+    const res = await next(params, ctx);
+    return { n: res.n + 1 };          // 输出干预
+  });
+  regHook(/^test-hook-vip$/, async (name, params, ctx, next) => ({ ...await next(params, ctx), vip: true }));
+  regHook(null, (name, params, ctx, next) => next(params, ctx));
   assert('字符串命中的 hook 改写输入并调整输出', await callFunc('test-hook-pass', { n: 1 }, CTX), { n: 3 });
   assert('未命中的 hook 不干预正常透传', await callFunc('test-hook-bare', { n: 11 }, CTX), { n: 11 });
   try {
@@ -323,8 +320,11 @@ async function main(): Promise<void> {
   }
   assert('正则命中的 hook 调整输出', await callFunc('test-hook-vip', { n: 5 }, CTX), { n: 5, vip: true });
   // 替换 ctx 向下传递（新 uid 抵达目标函数），原参不动
-  regHook((name, params, ctx, next) => next(params, { uid: 'hooker', roles: ctx.roles }), 'test-hook-ctx');
+  regHook('test-hook-ctx', (name, params, ctx, next) => next(params, { uid: 'hooker', roles: ctx.roles }));
   assert('hook 替换 ctx 向下传递', await callFunc('test-hook-ctx', { n: 7 }, CTX), { n: 7, uid: 'hooker' });
+  // 空串亦为通配钩子
+  regHook('', async (name, params, ctx, next) => ({ ...await next(params, ctx), bare: true }));
+  assert('空串通配钩子命中全部调用', await callFunc('test-hook-bare', { n: 12 }, CTX), { n: 12, bare: true });
 
   // ---------- 4) update ----------
   console.log('\n--- 4) update() ---');

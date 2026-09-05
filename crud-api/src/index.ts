@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import Koa from 'koa';
 import bodyParser from 'koa-bodyparser';
 import type { Context } from 'hongs-crud';
-import { regSift, siftPermits } from 'hongs-crud';
+import { regHooks } from './hooks';
 import { regCruds } from './cruds';
 import { regFuncs } from './funcs';
 import { regRoles } from './roles';
@@ -21,8 +21,8 @@ async function main() {
 
   regCruds(); // 注册所有 CRUD
   regFuncs(); // 注册所有接口函数
+  regHooks(); // 注册所有钩子函数
   regRoles(); // 注册所有角色权限
-  regSift(siftPermits); // 0.2.0 起 callFunc 不内置权限检查，须注册权限过滤器（缺省作用于全部调用）
 
   const app = new Koa();
   app.use(bodyParser({ enableTypes: ['json'] }));

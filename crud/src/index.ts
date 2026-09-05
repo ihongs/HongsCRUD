@@ -107,10 +107,10 @@ const HOOKS: { hook: Hook; name?: string | RegExp }[] = [];
 /**
  * 注册 callFunc 钩子，先注册的在外层
  * 钩子包裹方法执行，按需干预输入输出或经 next 放行
- * name 缺省匹配全部方法，为字符串时精确匹配方法名，为正则时匹配方法名
+ * name 缺省（undefined/null/空串）时匹配全部方法，为字符串时精确匹配方法名，为正则时匹配方法名
  */
-export function regHook(hook: Hook, name?: string | RegExp): void {
-  HOOKS.push({ hook, name });
+export function regHook(name: string | RegExp | null | undefined, hook: Hook): void {
+  HOOKS.push(name ? { hook, name } : { hook });
 }
 
 /* ---------- Error ---------- */
