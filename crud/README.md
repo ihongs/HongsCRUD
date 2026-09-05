@@ -812,7 +812,7 @@ await userCrud.syncFind();
 
 ## 5. KV 存储组件（Roster）
 
-`Roster` 是带有效期的键值存取接口：`set` 落一条记录，`get` 取值，过期视同不存在。适合验证码、上传令牌、防重放 nonce 等短命数据。接口与注册器从 subpath `hongs-crud/kv` 引入，实现在 `hongs-crud/kv/mongo`（mongoose）与 `hongs-crud/kv/redis`（node-redis v4），按需选用，主入口 `hongs-crud` 均不含：
+`Roster` 是带有效期的键值存取接口：`set` 存，`get` 取，过期无效。适合验证码、操作令牌、防重放 nonce 等短命数据。接口与注册器从 subpath `hongs-crud/kv` 引入，实现在 `hongs-crud/kv/mongo`（mongoose）与 `hongs-crud/kv/redis`（node-redis v4），按需选用，主入口 `hongs-crud` 均不含：
 
 ```ts
 import kv from 'hongs-crud/kv';
