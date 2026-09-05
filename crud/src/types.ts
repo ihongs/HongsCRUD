@@ -271,6 +271,7 @@ export interface SoftDel {
 }
 
 export interface Context {
+  via?: string;
   uid?: string;
   roles?: string[] | Set<string>;
   [key: string]: any;
@@ -284,4 +285,14 @@ export interface Crud {
   delete(params: DeleteParams, ctx: Context): DeleteResult;
 }
 
-export type Func = (params: Record<string, any>, ctx: Context) => any;
+export type Func = (
+  pms : Record<string, any>,
+  ctx : Context
+) => any;
+
+export type Sift = (
+  name: string,
+  pms : Record<string, any>,
+  ctx : Context,
+  next: Func,
+) => any;

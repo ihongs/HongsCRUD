@@ -349,9 +349,9 @@ mongoose 选项到 JSON Schema 的映射：
 
 ---
 
-## 3. 注册器：crud / func / role
+## 3. 注册器：crud / func / sift / role
 
-三者都是扁平的全局注册表；`callFunc(name, params, ctx)` 会按「Func 名 → CrudName.MethodName」的顺序解析并执行。
+四者都是扁平的全局注册表；`callFunc(name, params, ctx)` 会按「Func 名 → CrudName.MethodName」的顺序解析并执行，并对执行进行过滤。
 
 ### 3.1 注册 Crud（模型）
 
@@ -393,7 +393,34 @@ regFunc('org.search',  async ({ id, cols }) => {
 
 > 注意：上面 schema 例子中 `orgId.reference.method = 'org.search'` 就是指向这里注册的 Func。
 
-### 3.3 注册 Role（角色 → 动作集合）
+### 3.3 注册 Sift（过滤函数）
+
+```ts
+import { regSift, siftPermits } from 'hongs-crud';
+
+// !!! callFunc 不内置权限检查：不注册 siftPermits 则所有方法都不做权限检查
+// !!! 务必第一个注册（最外层），缺省 name 即作用于全部调用
+regSift(siftPermits);
+
+// 先注册的在外层，包裹方法执行
+// 第二参为可选的 name：缺省匹配全部，字符串精确匹配，亦可用正则匹配
+regSift(async (name, pms, ctx, next) => {
+  pms.uid = ctx.uid;            // 输入干预：强制当前用户
+  const res = await next(pms, ctx);
+  res.list.pop();               // 输出干预：去掉最后一行
+  return res;
+}, 'note.search');
+```
+
+说明：
+
+- 执行顺序为：过滤器链（按注册顺序由外到内）→ 方法执行（Func 查找 / CrudName.MethodName 调度）
+- `name` 缺省匹配全部方法；为字符串时精确匹配方法名，为正则时匹配方法名（如 `/^note\./` 命中 note 的全部方法）
+- `next` 为 `Func` 签名，须显式传参：`next(params, ctx)` 原样放行；改写传入的对象（引用传递）即完成输入干预
+- `next(params, newCtx)` 替换 ctx 向下传递（如切换 uid / roles），一旦替换对内层同样生效
+- 过滤器抛错即短路，调用方收到该异常；返回值即最终结果，可对 `next(params, ctx)` 的结果（多为 Promise）调整后返回
+
+### 3.4 注册 Role（角色 → 动作集合）
 
 ```ts
 import { regRole, hasRole, getRole, getRoleNames, isPermitted } from 'hongs-crud';
@@ -413,7 +440,7 @@ isPermitted('health.ping',   ['guest']);  // → true
 
 `acts` 参数可传 `string[]` 或 `Set<string>`。
 
-### 3.4 统一调度入口 `callFunc`
+### 3.5 统一调度入口 `callFunc`
 
 ```ts
 import { callFunc, CrudError, CrudErrno } from 'hongs-crud';

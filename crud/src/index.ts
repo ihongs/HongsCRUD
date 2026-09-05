@@ -2,8 +2,9 @@
 
 import mongoose, { Schema, Model } from 'mongoose';
 import type {
-  Func,
   Crud,
+  Func,
+  Sift,
   Context,
   SoftDel,
   RefItem,
@@ -97,6 +98,19 @@ export function getRole(role: string): Set<string> {
 
 export function getRoleNames(): string[] {
   return Object.keys(ROLES);
+}
+
+/* ---------- Sifts ---------- */
+
+const SIFTS: { sift: Sift; name?: string | RegExp }[] = [];
+
+/**
+ * 注册 callFunc 过滤器，先注册的在外层
+ * 过滤器包裹方法执行，按需干预输入输出或经 next 放行
+ * name 缺省匹配全部方法，为字符串时精确匹配方法名，为正则时匹配方法名
+ */
+export function regSift(sift: Sift, name?: string | RegExp): void {
+  SIFTS.push({ sift, name });
 }
 
 /* ---------- Error ---------- */
@@ -355,6 +369,24 @@ export class Cradle implements Crud {
       }) as unknown as DeleteResult;
   }
 
+  schema(params: SchemaParams, _ctx: Context): SchemaResult {
+    const { cols } = params;
+    const schema = this.getSchema();
+    const opts   = (schema as any).options || {};
+    const node   = buildObjectNode(schema, cols);
+
+    const result: SchemaResult = {
+      $schema   : 'https://json-schema.org/draft/2020-12/schema',
+      type      : 'object',
+      properties: node.properties || {},
+    };
+    if (opts.title      ) result.title       = opts.title;
+    if (opts.description) result.description = opts.description;
+    if (node.required   ) result.required    = node.required;
+
+    return result;
+  }
+
   search(params: SearchParams, ctx: Context): SearchResult {
     const { id, wd, mode, find = {}, sort, cols, refs, start = 0 } = params;
     const Model = this.getModel();
@@ -593,28 +625,6 @@ export class Cradle implements Crud {
     })() as unknown as UpsertResult;
   }
 
-  /**
-   * 转译为标准 JSON Schema（draft 2020-12）
-   * cols 仅过滤顶层字段
-   */
-  schema(params: SchemaParams, _ctx: Context): SchemaResult {
-    const { cols } = params;
-    const schema = this.getSchema();
-    const opts   = (schema as any).options || {};
-    const node   = buildObjectNode(schema, cols);
-
-    const result: SchemaResult = {
-      $schema   : 'https://json-schema.org/draft/2020-12/schema',
-      type      : 'object',
-      properties: node.properties || {},
-    };
-    if (opts.title      ) result.title       = opts.title;
-    if (opts.description) result.description = opts.description;
-    if (node.required   ) result.required    = node.required;
-
-    return result;
-  }
-
 }
 
 /* ---------- Helpers ---------- */
@@ -622,12 +632,7 @@ export class Cradle implements Crud {
 export function callFunc(name: string, params: Record<string, any>, ctx: Context): any {
   // 1. 从 FUNCS 中查找并执行，可覆盖 model.method
   if (hasFunc(name)) {
-    // 检查是否许可调用
-    if (! isPermitted(name, ctx.roles || [])) {
-      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
-    }
-
-    return getFunc(name)(params, ctx);
+    return runSifts(name, params, ctx, (ps, cs) => getFunc(name)(ps, cs));
   }
 
   // 2. 从 CRUDS 中查找并执行，仅放行 callable 的方法
@@ -642,21 +647,44 @@ export function callFunc(name: string, params: Record<string, any>, ctx: Context
     const crud = getCrud( crudName );
     if (! crud.callable?.includes(funcName)) break X;
 
-    // 检查是否许可调用
-    if (! isPermitted(name, ctx.roles || [])) {
-      throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
-    }
-
-    return (crud as any)[funcName].call(crud, params, ctx);
+    return runSifts(name, params, ctx, (ps, cs) => (crud as any)[funcName].call(crud, ps, cs));
   }
 
   throw new CrudError(`Method "${name}" is not registered.`, CrudErrno.METHOD_MISSING);
 }
 
-export function isPermitted(auth: string, roles: string[] | Set<string>): boolean {
+function runSifts(name: string, params: Record<string, any>, ctx: Context, run: Func): any {
+  const go = (i: number, ps: Record<string, any>, cs: Context): any => {
+    while (i < SIFTS.length && ! canSift(SIFTS[i].name, name)) i ++ ;
+    if (i >= SIFTS.length) return run(ps, cs);
+    const next: Func = (pms, ctx) => go(i + 1, pms || ps, ctx || cs);
+    return SIFTS[i].sift(name, ps, cs, next);
+  };
+  return go(0, params, ctx);
+}
+
+function canSift(name: string | RegExp | undefined, curr: string): boolean {
+  if (name === undefined) return true;
+  return typeof name === 'string' ? name === curr : name.test(curr);
+}
+
+/**
+ * 权限检查过滤器：按 ctx.roles 调用 isPermitted，未授权抛 RIGHT_DEPRIVED
+ */
+export function siftPermits (name: string, pms: Record<string, any>, ctx: Context, next: Func): any {
+  if (! isPermitted(name, ctx.roles || [])) {
+    throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
+  }
+  return next(pms, ctx);
+};
+
+/**
+ * 权限检查：判断用户角色是否对指定方法有权限
+ */
+export function isPermitted(name: string, roles: string[] | Set<string>): boolean {
   for (const role of roles) {
     const auths: Set<string> = ROLES[role];
-    if (auths && auths.has(auth)) return true;
+    if (auths && auths.has(name)) return true;
   }
   return false;
 }
@@ -785,7 +813,9 @@ function getDocVal(doc: any, path: string[]): any {
   return cur;
 }
 
-/** 取单段字段：mongoose 文档 / 子文档走 get，普通对象下标取值 */
+/** 
+ * 取单段字段：mongoose 文档 / 子文档走 get，普通对象下标取值
+ */
 function getDepVal(val: any, name: string): any {
   if (val === undefined || val === null) return val;
   if (typeof val.get === 'function') {
@@ -809,16 +839,17 @@ export async function fillRefs(
   const keyMap: Record<string, RefPath> = {};
   for (const rp of refPaths) if (! keyMap[rp.key]) keyMap[rp.key] = rp;
 
-  // 挑选出需要关联的
+  // 挑选有值的字段，避免空的查询条件导致取全部
   const keys = Object.keys(refIds).filter(k => {
     const rp = keyMap[k];
     return !! (rp && rp.ref.method && refIds[k].length);
   });
 
-  // 增加请求来源标识
-  const ctxs = {...(ctx || {}), src: 'ref'};
+  // 增加标识和身份，以便必要时逃过内部权限检查
+  const ctxs = { ...(ctx || {}), via: 'ref' };
+  ctxs.roles = ctxs.roles ? [...ctxs.roles, '$ref'] : ['$ref'];
 
-  const refs : Record <string, any[]> = { };
+  const refs : Record<string, any[]> = {};
 
   await Promise.all(keys.map(async k => {
     const rp = keyMap[k];

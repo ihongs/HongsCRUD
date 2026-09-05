@@ -3,7 +3,7 @@
 // 前置：本地 MongoDB 已启动（默认 mongodb://127.0.0.1:27017）
 
 import mongoose from 'mongoose';
-import { Cradle, CrudError, CrudErrno, getRefIds, getRefPaths, regFunc, regCrud, regRole } from '../src/index';
+import { Cradle, CrudError, CrudErrno, callFunc, getRefIds, getRefPaths, regFunc, regCrud, regRole, regSift, siftPermits } from '../src/index';
 
 const MONGO_URI = 'mongodb://127.0.0.1:27017/test';
 const DB_NAME   = 'test';
@@ -67,8 +67,8 @@ regFunc('test-area-refs', async (params: any) => {
   return { list: all.filter(a => ids.includes(a._id)) };
 });
 
-// 角色 tester 放行三个 refs 方法
-regRole('tester', ['test-status-refs', 'crud-test.search', 'test-area-refs']);
+// 角色 tester 放行三个 refs 方法 + 两个过滤器测试方法
+regRole('tester', ['test-status-refs', 'crud-test.search', 'test-area-refs', 'test-sift-pass', 'test-sift-bare', 'test-sift-vip', 'test-sift-ctx']);
 
 // 调用包装：Cradle 接口方法返回类型签名是同步，实际是 Promise
 async function callCreate(data: any): Promise<any> {
@@ -241,7 +241,6 @@ async function main(): Promise<void> {
   await callUpdate({ id: c1.id, data: { owner: c2.id } });
 
   const refAll = await callSearch({ limit: 100, refs: true });
-  console.log(JSON.stringify(refAll));
   assertOk('refs.status 是行数组', Array.isArray(refAll.refs?.['status']));
   assertOk('refs.status 三行', refAll.refs?.['status']?.length === 3);
   assertOk('refs.status 含 draft 草稿行', !!refAll.refs?.['status']?.find((r: any) => r._id === 'draft' && r.name === '草稿'));
@@ -284,6 +283,48 @@ async function main(): Promise<void> {
   assertOk('statis refs.status 含 draft 草稿行', !!cntAll.refs?.['status']?.find((r: any) => r._id === 'draft' && r.name === '草稿'));
   const cntNone = await callStatis(crud, {});
   assertOk('statis 默认不带 refs', cntNone.refs === undefined);
+
+  // ---------- 3.7) sifts（callFunc 过滤器） ----------
+  console.log('\n--- 3.7) sifts：callFunc 过滤器 ---');
+  const CTX = { uid: 'tester', roles: ['tester'] };
+  regFunc('test-sift-pass', async ({ n }: any) => ({ n }));
+  regFunc('test-sift-bare', async ({ n }: any) => ({ n }));
+  regFunc('test-sift-nop' , async ({ n }: any) => ({ n }));
+  regFunc('test-sift-vip' , async ({ n }: any) => ({ n }));
+  regFunc('test-sift-ctx' , async ({ n }: any, ctx: any) => ({ n, uid: ctx.uid }));
+  // 未注册 siftPermits 时不做权限检查
+  assert('未注册 siftPermits 时不做权限检查', await callFunc('test-sift-nop', { n: 1 }, CTX), { n: 1 });
+  // 权限检查过滤器（README 示例同款），缺省 name 作用于全部调用
+  regSift(siftPermits);
+  // 依次注册三个：字符串精确命中、正则命中调整输出、缺省全部放行
+  regSift(
+    async (name, params, ctx, next) => {
+      params.n = (params.n || 0) * 2;   // 输入干预
+      const res = await next(params, ctx);
+      return { n: res.n + 1 };          // 输出干预
+    },
+    'test-sift-pass'
+  );
+  regSift(async (name, params, ctx, next) => ({ ...await next(params, ctx), vip: true }), /^test-sift-vip$/);
+  regSift((name, params, ctx, next) => next(params, ctx));
+  assert('字符串命中的 sift 改写输入并调整输出', await callFunc('test-sift-pass', { n: 1 }, CTX), { n: 3 });
+  assert('未命中的 sift 不干预正常透传', await callFunc('test-sift-bare', { n: 11 }, CTX), { n: 11 });
+  try {
+    await callFunc('test-sift-nop', { n: 1 }, CTX);
+    assertOk('注册 siftPermits 后未授权方法抛 RIGHT_DEPRIVED', false);
+  } catch (e: any) {
+    assertOk('注册 siftPermits 后未授权方法抛 RIGHT_DEPRIVED', e instanceof CrudError && e.code === CrudErrno.RIGHT_DEPRIVED);
+  }
+  try {
+    await callFunc('crud-test.update', { _id: c1.id, doc: { name: 'x' } }, CTX);
+    assertOk('注册 siftPermits 后未授权 crud 方法抛 RIGHT_DEPRIVED', false);
+  } catch (e: any) {
+    assertOk('注册 siftPermits 后未授权 crud 方法抛 RIGHT_DEPRIVED', e instanceof CrudError && e.code === CrudErrno.RIGHT_DEPRIVED);
+  }
+  assert('正则命中的 sift 调整输出', await callFunc('test-sift-vip', { n: 5 }, CTX), { n: 5, vip: true });
+  // 替换 ctx 向下传递（新 uid 抵达目标函数），原参不动
+  regSift((name, params, ctx, next) => next(params, { uid: 'sifter', roles: ctx.roles }), 'test-sift-ctx');
+  assert('sift 替换 ctx 向下传递', await callFunc('test-sift-ctx', { n: 7 }, CTX), { n: 7, uid: 'sifter' });
 
   // ---------- 4) update ----------
   console.log('\n--- 4) update() ---');
