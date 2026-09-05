@@ -669,14 +669,20 @@ function canHook(name: string | RegExp | undefined, curr: string): boolean {
 }
 
 /**
- * 权限检查钩子：按 ctx.via 或 ctx.roles 调用 isPermitted，未授权抛 RIGHT_DEPRIVED
- * ctx.roles 为空时，默认查 anon 角色
+ * 权限检查钩子
+ * 先检查 open 角色；
+ * ctx.roles 为空查 anon 角色；
+ * ctx.via 有则查其对应的角色。
+ * 未授权抛异常：RIGHT_DEPRIVED
  */
 export function hookPermits(name: string, pms: Record<string, any>, ctx: Context, next: Func): any {
-  if (ctx.via && isPermitted(name , [ctx.via])) {
+  if (isPermitted(name, ['open'])) {
     return next(pms, ctx);
   }
   if (isPermitted(name, ctx.roles || ['anon'])) {
+    return next(pms, ctx);
+  }
+  if (ctx.via && isPermitted(name , [ctx.via])) {
     return next(pms, ctx);
   }
   throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
@@ -850,9 +856,9 @@ export async function fillRefs(
   });
 
   // 增加调用标识，以便必要时逃过内部权限检查
-  const ctxs = { ...(ctx || {}), via: 'ref' };
+  const ctxs = {...(ctx || {}), via: 'ref'};
 
-  const refs : Record<string, any[]> = {};
+  const refs : Record <string, any[]> = { };
 
   await Promise.all(keys.map(async k => {
     const rp = keyMap[k];

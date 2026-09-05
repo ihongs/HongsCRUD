@@ -67,8 +67,9 @@ regFunc('test-area-refs', async (params: any) => {
   return { list: all.filter(a => ids.includes(a._id)) };
 });
 
-// 角色 tester 放行三个 refs 方法 + 四个钩子测试方法
-regRole('tester', ['test-status-refs', 'crud-test.search', 'test-area-refs', 'test-hook-pass', 'test-hook-bare', 'test-hook-vip', 'test-hook-ctx']);
+// 角色 tester 放行 search + 四个钩子测试方法；refs 方法归预定角色 ref（via=ref 时放行）
+regRole('tester', ['crud-test.search', 'test-hook-pass', 'test-hook-bare', 'test-hook-vip', 'test-hook-ctx']);
+regRole('ref'   , ['test-status-refs', 'test-area-refs']);
 
 // 调用包装：Cradle 接口方法返回类型签名是同步，实际是 Promise
 async function callCreate(data: any): Promise<any> {
@@ -325,6 +326,27 @@ async function main(): Promise<void> {
   // 空串亦为通配钩子
   regHook('', async (name, params, ctx, next) => ({ ...await next(params, ctx), bare: true }));
   assert('空串通配钩子命中全部调用', await callFunc('test-hook-bare', { n: 12 }, CTX), { n: 12, bare: true });
+
+  // ---------- 预定角色 open / anon（hookPermits 放行路径） ----------
+  console.log('\n--- 3.7) 预定角色 open / anon / ref ---');
+  regFunc('test-hook-open', async ({ n }: any) => ({ n }));
+  regFunc('test-hook-anon', async ({ n }: any) => ({ n }));
+  regRole('open', ['test-hook-open']);
+  regRole('anon', ['test-hook-anon']);
+  // open：开放接口，ctx 无角色也放行（先于一切检查；空串通配钩子亦会命中）
+  assert('open 角色对空角色 ctx 放行', await callFunc('test-hook-open', { n: 1 }, { uid: 'anon', roles: [] }), { n: 1, bare: true });
+  // anon：roles 缺失（匿名）时的角色
+  assert('anon 角色对 roles 缺失的 ctx 放行', await callFunc('test-hook-anon', { n: 2 }, { uid: 'anon' }), { n: 2, bare: true });
+  try {
+    await callFunc('test-hook-nop', { n: 1 }, { uid: 'anon' });
+    assertOk('匿名调未授权方法抛 RIGHT_DEPRIVED', false);
+  } catch (e: any) {
+    assertOk('匿名调未授权方法抛 RIGHT_DEPRIVED', e instanceof CrudError && e.code === CrudErrno.RIGHT_DEPRIVED);
+  }
+  // ref：内部关联查询带 via=ref，tester 不含 refs 方法仍经 ref 角色放行
+  const refSearch = await callSearch({ limit: 100, refs: { status: 1 } });
+  assertOk('ref 角色放行内部关联查询（via=ref）', Array.isArray(refSearch.refs?.['status'])
+    && !! refSearch.refs?.['status']?.find((r: any) => r._id === 'draft' && r.name === '草稿'));
 
   // ---------- 4) update ----------
   console.log('\n--- 4) update() ---');

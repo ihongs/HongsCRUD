@@ -441,7 +441,8 @@ isPermitted('health.ping',   ['guest']);  // → true
 
 预定角色：
 
-- `anon`：匿名用户，缺省角色，开放接口
+- `open`: 开放接口
+- `anon`：匿名用户，roles 缺失时的角色
 - `ref` ：内部关联，关联查询的临时角色
 
 ### 3.5 统一调度入口 `callFunc`
