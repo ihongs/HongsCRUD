@@ -439,6 +439,11 @@ isPermitted('health.ping',   ['guest']);  // → true
 
 `acts` 参数可传 `string[]` 或 `Set<string>`。
 
+预定角色：
+
+- `anon`：匿名用户，缺省角色，开放接口
+- `ref` ：内部关联，关联查询的临时角色
+
 ### 3.5 统一调度入口 `callFunc`
 
 ```ts

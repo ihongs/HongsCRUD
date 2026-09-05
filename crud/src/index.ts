@@ -669,13 +669,17 @@ function canHook(name: string | RegExp | undefined, curr: string): boolean {
 }
 
 /**
- * 权限检查钩子：按 ctx.roles 调用 isPermitted，未授权抛 RIGHT_DEPRIVED
+ * 权限检查钩子：按 ctx.via 或 ctx.roles 调用 isPermitted，未授权抛 RIGHT_DEPRIVED
+ * ctx.roles 为空时，默认查 anon 角色
  */
-export function hookPermits (name: string, pms: Record<string, any>, ctx: Context, next: Func): any {
-  if (! isPermitted(name, ctx.roles || [])) {
-    throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
+export function hookPermits(name: string, pms: Record<string, any>, ctx: Context, next: Func): any {
+  if (ctx.via && isPermitted(name , [ctx.via])) {
+    return next(pms, ctx);
   }
-  return next(pms, ctx);
+  if (isPermitted(name, ctx.roles || ['anon'])) {
+    return next(pms, ctx);
+  }
+  throw new CrudError(`Current user not permitted to call "${name}"`, CrudErrno.RIGHT_DEPRIVED);
 };
 
 /**
@@ -839,15 +843,14 @@ export async function fillRefs(
   const keyMap: Record<string, RefPath> = {};
   for (const rp of refPaths) if (! keyMap[rp.key]) keyMap[rp.key] = rp;
 
-  // 挑选有值的字段，避免空的查询条件导致取全部
+  // 挑有值的字段，避免空的查询条件导致取全部
   const keys = Object.keys(refIds).filter(k => {
     const rp = keyMap[k];
     return !! (rp && rp.ref.method && refIds[k].length);
   });
 
-  // 增加标识和身份，以便必要时逃过内部权限检查
+  // 增加调用标识，以便必要时逃过内部权限检查
   const ctxs = { ...(ctx || {}), via: 'ref' };
-  ctxs.roles = ctxs.roles ? [...ctxs.roles, '$ref'] : ['$ref'];
 
   const refs : Record<string, any[]> = {};
 
