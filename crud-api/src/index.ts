@@ -38,11 +38,14 @@ async function main() {
 
       // 解析 JWT / API Key → 构造 ctx
       let userCtx: Context = await resolveUserCtx(ctx.request.headers.authorization);
-
+      
       // 匿名 fallback：无 uid 且无有效 roles 时，补 anon 角色
       if (!userCtx.uid && (!userCtx.roles || (userCtx.roles as any[]).length === 0)) {
         userCtx = { ...userCtx, roles: ['anon'] };
       }
+
+      // 标记 RPC 调用
+      userCtx.via = 'rpc';
 
       ctx.body = await handleRpc(body, userCtx);
       return;

@@ -32,8 +32,6 @@ async function dispatch(req: RpcRequest, ctx: Context): Promise<RpcResponse> {
     return err(id, -32600, 'Invalid Request: method is required');
   }
 
-  ctx.via = 'rpc'; // 标记为 RPC 调用
-
   try {
     const result = await callFunc(req.method, req.params || {}, ctx);
     return ok(id, result);
