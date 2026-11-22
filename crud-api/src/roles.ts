@@ -14,7 +14,7 @@ export function regRoles(): void {
 
   // 超级管理员：放行所有方法，管理所有数据
   regRole('root', [
-    'admin-all',
+    'admin', 'admin-all',
     'auth.chall', 'auth.logout', 'auth.refresh', 'upload.config',
     'mine.search', 'mine.update', 'mineApiKey.search', 'mineApiKey.create', 'mineApiKey.delete',
     'user.search', 'user.create', 'user.delete', 'user.update', 'user.upsert', 'user.statis', 'user.schema',
