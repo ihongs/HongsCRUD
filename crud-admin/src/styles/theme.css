@@ -1,0 +1,78 @@
+:root {
+  --bs-primary: #3b6ef5;
+  --bs-primary-rgb: 59, 110, 245;
+}
+
+body {
+  background-color: #f4f6fb;
+}
+
+a {
+  text-decoration: none;
+}
+
+.admin-sidebar {
+  width: 230px;
+  min-height: 100vh;
+  background: #111827;
+}
+
+.admin-sidebar .nav-link {
+  color: #cbd5e1;
+  border-radius: .5rem;
+  margin-bottom: .25rem;
+}
+
+.admin-sidebar .nav-link:hover,
+.admin-sidebar .nav-link.active {
+  color: #fff;
+  background: rgba(255, 255, 255, .1);
+}
+
+.admin-sidebar .brand {
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: .02em;
+}
+
+.admin-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.stat-card .display-6 {
+  font-weight: 700;
+}
+
+.avatar-sm {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+}
+
+.avatar-lg {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+}
+
+.avatar-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #e2e8f0;
+  color: #475569;
+  font-weight: 600;
+}
+
+.avatar-initial.avatar-sm { width: 32px; height: 32px; font-size: .8rem; }
+.avatar-initial.avatar-lg { width: 72px; height: 72px; font-size: 1.4rem; }
+
+.table > :not(caption) > * > * {
+  vertical-align: middle;
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
