@@ -2,7 +2,7 @@ import { createHmac, pbkdf2Sync, timingSafeEqual } from 'crypto';
 import type { Context } from 'hongs-crud';
 import { regFunc, CrudError, CrudErrno } from 'hongs-crud';
 import { user, userApiKey, genApiKey } from '../cruds/user';
-import { verifyPoW } from './verify';
+import { issueChallenge, checkChallenge } from '../utils/challenge';
 
 /* ---------- 配置 ---------- */
 
@@ -13,6 +13,9 @@ if (!JWT_SECRET) {
 
 const ACCESS_TTL    = Number(process.env.ACCESS_TTL)    || 15 * 60 * 1000;
 const REFRESH_TTL   = Number(process.env.REFRESH_TTL)   || 365 * 86400000;
+
+/** access token 默认有效期（秒） */
+export const ACCESS_TTL_SECONDS = Math.floor(ACCESS_TTL / 1000);
 
 /* ---------- Base64url 工具 ---------- */
 
@@ -27,15 +30,36 @@ function base64urlDecode(str: string): Buffer {
 
 /* ---------- JWT (HS256, 手写) ---------- */
 
-function signAccess(uid: string): string {
-  const header  = base64urlEncode(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
-  const nowSec  = Math.floor(Date.now() / 1000);
-  const payload = base64urlEncode(Buffer.from(JSON.stringify({ sub: uid, iat: nowSec, exp: nowSec + Math.floor(ACCESS_TTL / 1000) })));
+export interface AccessPayload {
+  uid : string;
+  /** token 附加数据（签发时写入的 data，如上传的 scene/ext、SSE 的 scene） */
+  data: Record<string, any>;
+}
+
+/**
+ * 签发 access JWT。
+ * ttl 为有效期（秒）：-1 不限（不写 exp），未设置（含 0）时用 ACCESS_TTL，>0 指定。
+ * data 为附加数据，有则写入 payload.data。
+ * 普通登录 token 不传 data；上传 / SSE 等场景自行携带所需参数。
+ */
+export function signAccess(uid: string, ttl?: number, data?: Record<string, any>): string {
+  const header = base64urlEncode(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttlNum = Number(ttl);
+
+  const claims: Record<string, any> = { sub: uid, iat: nowSec };
+  if (ttlNum !== -1) {
+    const ttlSec = ttlNum > 0 ? Math.floor(ttlNum) : ACCESS_TTL_SECONDS;
+    claims.exp = nowSec + ttlSec;
+  }
+  if (data && Object.keys(data).length > 0) claims.data = data;
+
+  const payload = base64urlEncode(Buffer.from(JSON.stringify(claims)));
   const sig     = base64urlEncode(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
   return `${header}.${payload}.${sig}`;
 }
 
-function verifyAccess(token: string): { uid: string } | null {
+function verifyAccess(token: string): AccessPayload | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
 
@@ -53,12 +77,23 @@ function verifyAccess(token: string): { uid: string } | null {
   // 解 payload 并验 exp
   try {
     const payload = JSON.parse(base64urlDecode(payloadB64).toString());
-    if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
+    // 无 exp 表示不限时（仅 getSSEUrl 用 ttl=-1 签发）
+    if (payload.exp && payload.exp <= Math.floor(Date.now() / 1000)) return null;
     if (!payload.sub) return null;
-    return { uid: payload.sub };
+    const data = payload.data && typeof payload.data === 'object' ? payload.data : {};
+    return { uid: payload.sub, data };
   } catch {
     return null;
   }
+}
+
+/**
+ * 仅校验裸 token（签名 + 过期）：不加载 roles，也不要求 uid 在库中存在。
+ * 用于上传等只需要“token 有效”的场景（token 从 url 参数取）。
+ */
+export function verifyToken(token?: string): AccessPayload | null {
+  if (!token || !token.startsWith('eyJ')) return null;
+  return verifyAccess(token);
 }
 
 /* ---------- 密码验证 ---------- */
@@ -92,20 +127,11 @@ async function loadUserRoles(uid: string): Promise<string[]> {
  */
 export async function resolveUserCtx(authHeader?: string): Promise<Context> {
   const ctx: Context = {};
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (! authHeader || !authHeader.startsWith('Bearer ')) {
     return ctx;
   }
   const token = authHeader.slice(7).trim();
-  if (!token) return ctx;
-
-  // sk- 前缀 → API key 路径
-  if (token.startsWith('sk-')) {
-    const m = userApiKey.getModel();
-    const doc = await m.findOne({ key: token, app: 'sk' }).lean() as any;
-    if (doc && (!doc.expiresAt || doc.expiresAt.getTime() > Date.now())) {
-      ctx.uid = String(doc.userId);
-      ctx.roles = await loadUserRoles(ctx.uid);
-    }
+  if (! token) {
     return ctx;
   }
 
@@ -119,8 +145,30 @@ export async function resolveUserCtx(authHeader?: string): Promise<Context> {
     return ctx;
   }
 
+  // sk- 前缀 → API key 路径
+  if (token.startsWith('sk-')) {
+    const mod = userApiKey.getModel();
+    const doc = await mod.findOne({ key: token, app: 'sk' }).lean() as any;
+    if (doc && (!doc.expiresAt || doc.expiresAt.getTime() > Date.now())) {
+      ctx.uid = String(doc.userId);
+      ctx.roles = await loadUserRoles(ctx.uid);
+    }
+    return ctx;
+  }
+
   // rt- 或其他 → 业务请求不处理
   return ctx;
+}
+
+/* ---------- func: auth.chall ---------- */
+
+async function authChall(params: Record<string, any>, _ctx: Context): Promise<any> {
+  const username: string | undefined = params?.username;
+  if (! username || typeof username !== 'string') {
+    throw new CrudError('username is required', CrudErrno.PARAMS_INVALID, { reason: 'missing_username' });
+  }
+
+  return issueChallenge('auth:' + username);
 }
 
 /* ---------- func: auth.login ---------- */
@@ -128,7 +176,7 @@ export async function resolveUserCtx(authHeader?: string): Promise<Context> {
 async function authLogin(params: Record<string, any>, _ctx: Context): Promise<any> {
   const username: string | undefined = params?.username;
   const password: string | undefined = params?.password;
-  const verify: Record<string, any> | undefined = params?.verify;
+  const chall: Record<string, any> | undefined = params?.chall;
 
   if (!username || typeof username !== 'string') {
     throw new CrudError('username is required', CrudErrno.PARAMS_INVALID, { reason: 'bad_credentials' });
@@ -137,8 +185,8 @@ async function authLogin(params: Record<string, any>, _ctx: Context): Promise<an
     throw new CrudError('password is required', CrudErrno.PARAMS_INVALID, { reason: 'bad_credentials' });
   }
 
-  // 1. 验证 verify 对象（challenge + nonce）
-  verifyPoW(verify || {}, username);
+  // 1. 验证 chall 对象（challenge + nonce），并原子消费该挑战（只能用一次）
+  await checkChallenge('auth:' + username, chall?.challenge || '', chall?.nonce || '');
 
   // 2. 查用户（只针对有用户名密码的用户；+ 前缀强制取 select:false 字段）
   const userModel = user.getModel();
@@ -236,7 +284,8 @@ async function authLogout(params: Record<string, any>, _ctx: Context): Promise<a
 /* ---------- 注册 ---------- */
 
 export function regAuthFuncs(): void {
+  regFunc('auth.chall',   authChall);
   regFunc('auth.login',   authLogin);
-  regFunc('auth.refresh', authRefresh);
   regFunc('auth.logout',  authLogout);
+  regFunc('auth.refresh', authRefresh);
 }

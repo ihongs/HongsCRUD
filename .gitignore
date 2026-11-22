@@ -8,6 +8,7 @@ dist-test/
 # IDE
 .trae/
 .vscode/
+.claude/
 
 # 系统垃圾
 .DS_Store
@@ -28,6 +29,11 @@ coverage/
 package-lock.json
 pnpm-lock.yaml
 yarn.lock
+
+# 上传文件目录
+/crud-api/static/upload/
+/crud-api/upload/
+/crud-api/server/tmp/
 
 # 环境变量
 .env

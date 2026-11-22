@@ -1,18 +1,22 @@
 import { regRole } from 'hongs-crud';
 
 export function regRoles(): void {
-  // 匿名角色：放行登录相关 func（无 uid 且无 roles 时由入口补 anon）
+  // 匿名角色：未登录的用户
   regRole('anon', [
-    'auth.login', 'auth.logout', 'auth.refresh',
-    'verify.challenge',
+    'auth.chall', 'auth.login', 'auth.logout', 'auth.refresh',
   ]);
 
-  // 管理员角色：放行 mine / mineApiKey / user 所有 callable 方法
-  regRole('admin', [
-    'auth.logout', 'auth.refresh', 'verify.challenge',
-    'user.create', 'user.update', 'user.delete', 'user.search',
-    'user.statis', 'user.upsert', 'user.schema',
-    'mine.search', 'mine.update',
-    'mineApiKey.search', 'mineApiKey.create', 'mineApiKey.delete',
+  // 普通用户：已登录的一般用户
+  regRole('user', [
+    'auth.chall', 'auth.logout', 'auth.refresh', 'upload.config',
+    'mine.search', 'mine.update', 'mineApiKey.search', 'mineApiKey.create', 'mineApiKey.delete',
+  ]);
+
+  // 超级管理员：放行所有方法，管理所有数据
+  regRole('root', [
+    'admin-all',
+    'auth.chall', 'auth.logout', 'auth.refresh', 'upload.config',
+    'mine.search', 'mine.update', 'mineApiKey.search', 'mineApiKey.create', 'mineApiKey.delete',
+    'user.search', 'user.create', 'user.delete', 'user.update', 'user.upsert', 'user.statis', 'user.schema',
   ]);
 }

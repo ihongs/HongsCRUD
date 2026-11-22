@@ -10,16 +10,36 @@
     "init-admin": "tsx src/scripts/init-admin.ts"
   },
   "dependencies": {
+    "hongs-crud": "^0.2.3",
     "koa": "^2.15.0",
     "koa-bodyparser": "^4.4.1",
-    "mongoose": "^8.0.0",
-    "hongs-crud": "^0.2.1"
+    "mongoose": "^8.0.0"
+  },
+  "peerDependencies": {
+    "@aws-sdk/client-s3": "^3.1175.0",
+    "@aws-sdk/s3-request-presigner": "^3.1175.0",
+    "ali-oss": "^6.23.0"
+  },
+  "peerDependenciesMeta": {
+    "@aws-sdk/client-s3": {
+      "optional": true
+    },
+    "@aws-sdk/s3-request-presigner": {
+      "optional": true
+    },
+    "ali-oss": {
+      "optional": true
+    }
   },
   "devDependencies": {
-    "tsx": "^4.7.0",
-    "typescript": "^5.0.0",
-    "@types/node": "^20.0.0",
+    "@aws-sdk/client-s3": "^3.1175.0",
+    "@aws-sdk/s3-request-presigner": "^3.1175.0",
+    "@types/ali-oss": "^6.23.4",
     "@types/koa": "^2.15.0",
-    "@types/koa-bodyparser": "^4.3.12"
+    "@types/koa-bodyparser": "^4.3.12",
+    "@types/node": "^20.0.0",
+    "ali-oss": "^6.23.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.0.0"
   }
 }

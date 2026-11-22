@@ -1,7 +1,7 @@
 import { regAuthFuncs } from './auth';
-import { regVerifyFuncs } from './verify';
+import { regUploadFuncs } from './upload';
 
 export function regFuncs(): void {
   regAuthFuncs();
-  regVerifyFuncs();
+  regUploadFuncs();
 }
