@@ -1,14 +1,14 @@
 import { randomBytes, pbkdf2Sync } from 'crypto';
 import { Schema } from 'mongoose';
-import { Cradle } from 'hongs-crud';
+import { Cradle, type Context, type SearchResult } from 'hongs-crud';
 
 /* ---------- User (users) ---------- */
 
 const userSchema = new Schema(
   {
     username:  { type: String, unique: true },
-    password:  { type: String },
-    passsalt:  { type: String },
+    password:  { type: String, select: false },
+    passsalt:  { type: String, select: false },
     name:      { type: String },
     avatar:    { type: String },
     email:     { type: String, index: true },
@@ -19,8 +19,12 @@ const userSchema = new Schema(
     collection: 'users',
     softDelete: true,
     timestamps: true,
+    limitDef: 20,
   },
 );
+
+// 复合全文索引：wd 走 $text；中文关键词由 User.search 内部转 $regex
+userSchema.index({ username: 'text', name: 'text', phone: 'text', email: 'text' });
 
 export class User extends Cradle {
   constructor() {
@@ -28,17 +32,94 @@ export class User extends Cradle {
   }
 
   override add(data: Record<string, any>): [ any, string ] {
-    if (typeof data.password === 'string' && data.password.length > 0) {
-      Object.assign(data, hashPassword(data.password));
+    const hasPassword = typeof data.password === 'string';
+    if (hasPassword) {
+      if (data.password.length > 0) {
+        Object.assign(data, hashPassword(data.password));
+      } else {
+        data.passsalt = '';
+      }
     }
+
     return super.add(data);
   }
 
+  /**
+   * 更新用户：
+   * - password 非空 → 重新加盐哈希；
+   * - password === ''  → 清空密码（同时清 salt），此后不能密码登录；
+   * - 未传 password   → 保持不变；
+   * 写入密码后统一吊销该用户的 refresh token（app='rt'）。
+   */
   override set(id: string, data: Record<string, any>): [ any, number ] {
-    if (typeof data.password === 'string' && data.password.length > 0) {
-      Object.assign(data, hashPassword(data.password));
+    const hasPassword = typeof data.password === 'string';
+    if (hasPassword) {
+      if (data.password.length > 0) {
+        Object.assign(data, hashPassword(data.password));
+      } else {
+        data.passsalt = '';
+      }
     }
-    return super.set(id, data);
+
+    const result = super.set(id, data) as unknown as Promise<[ any, number ]>;
+    if (! hasPassword) return result as unknown as [ any, number ];
+
+    return result.then(async ([ doc, n ]) => {
+      if (n > 0) {
+        await userApiKey.getModel().deleteMany({ userId: doc?._id ?? id, app: 'rt' });
+      }
+      return [ doc, n ];
+    }) as unknown as [ any, number ];
+  }
+
+  /**
+   * 软删除（停用）后吊销该用户 refresh token；配合 loadUserRoles 过滤 isDeleted，
+   * 旧 access 也会立刻失去所有权限。
+   */
+  override delAll(ids: string[], data?: Record<string, any>): number {
+    const result = super.delAll(ids, data) as unknown as Promise<number>;
+    return result.then(async n => {
+      if (n > 0) {
+        await userApiKey.getModel().deleteMany({ userId: { $in: ids }, app: 'rt' });
+      }
+      return n;
+    }) as unknown as number;
+  }
+
+  /**
+   * 管理端搜索：
+   * 1. wd 含中文 → 转 find.$or 正则（Mongo text 索引不切中文），否则保持 wd 走 $text；
+   * 2. 强制剔除 password / passsalt，任何 cols 组合都拿不到。
+   */
+  override search(params: any, ctx: Context): SearchResult {
+    params = { ...(params || {}) };
+
+    const wd = typeof params.wd === 'string' ? params.wd.trim() : '';
+    if (wd && /[\u3400-\u9FFF]/.test(wd)) {
+      const kw = wd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const or = ['username', 'name', 'phone', 'email']
+        .map(field => ({ [field]: { $regex: kw, $options: 'i' } }));
+      params.find = params.find && Object.keys(params.find).length
+        ? { $and: [ params.find, { $or: or } ] }
+        : { $or: or };
+      params.wd = undefined;
+    }
+
+    const cols: Record<string, any> = { ...(params.cols || {}) };
+    if (! params.cols || Object.values(params.cols).includes(0)) {
+      cols.password = 0;
+      cols.passsalt = 0;
+    } else {
+      delete cols.password;
+      delete cols.passsalt;
+      if (! Object.keys(cols).length) {
+        cols.password = 0;
+        cols.passsalt = 0;
+      }
+    }
+    params.cols = cols;
+
+    return super.search(params, ctx);
   }
 }
 

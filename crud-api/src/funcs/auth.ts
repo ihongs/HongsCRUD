@@ -1,6 +1,5 @@
 import { createHmac, pbkdf2Sync, timingSafeEqual } from 'crypto';
-import type { Context } from 'hongs-crud';
-import { regFunc, CrudError, CrudErrno } from 'hongs-crud';
+import { regFunc, getRole, isPermitted, CrudError, CrudErrno, type Context } from 'hongs-crud';
 import { user, userApiKey, genApiKey } from '../cruds/user';
 import { issueChallenge, checkChallenge } from '../utils/challenge';
 
@@ -54,29 +53,38 @@ export function signAccess(uid: string, ttl?: number, data?: Record<string, any>
   }
   if (data && Object.keys(data).length > 0) claims.data = data;
 
-  const payload = base64urlEncode(Buffer.from(JSON.stringify(claims)));
-  const sig     = base64urlEncode(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest());
-  return `${header}.${payload}.${sig}`;
+  const pay = base64urlEncode(Buffer.from(JSON.stringify(claims)));
+  const sig = base64urlEncode(createHmac('sha256', JWT_SECRET).update(`${header}.${pay}`).digest());
+  return `${header}.${pay}.${sig}`;
+}
+
+/**
+ * 仅校验裸 token（签名 + 过期）：不加载 roles，也不要求 uid 在库中存在。
+ * 用于只需要“token 有效”的场景（token 从 url 参数取）。
+ */
+export function verifyToken(token?: string): AccessPayload | null {
+  if (!token || !token.startsWith('eyJ')) return null;
+  return verifyAccess(token);
 }
 
 function verifyAccess(token: string): AccessPayload | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
 
-  const [headerB64, payloadB64, sigB64] = parts;
+  const [headerB64, payB64, sigB64] = parts;
 
   // 重算签名
-  const expectedSig = base64urlEncode(
-    createHmac('sha256', JWT_SECRET).update(`${headerB64}.${payloadB64}`).digest(),
+  const expSig = base64urlEncode(
+    createHmac('sha256', JWT_SECRET).update(`${headerB64}.${payB64}`).digest(),
   );
   // timingSafeEqual 要求等长；长度不等直接判失败
   const sigBuf = Buffer.from(sigB64);
-  const expBuf = Buffer.from(expectedSig);
+  const expBuf = Buffer.from(expSig);
   if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
 
   // 解 payload 并验 exp
   try {
-    const payload = JSON.parse(base64urlDecode(payloadB64).toString());
+    const payload = JSON.parse(base64urlDecode(payB64).toString());
     // 无 exp 表示不限时（仅 getSSEUrl 用 ttl=-1 签发）
     if (payload.exp && payload.exp <= Math.floor(Date.now() / 1000)) return null;
     if (!payload.sub) return null;
@@ -85,15 +93,6 @@ function verifyAccess(token: string): AccessPayload | null {
   } catch {
     return null;
   }
-}
-
-/**
- * 仅校验裸 token（签名 + 过期）：不加载 roles，也不要求 uid 在库中存在。
- * 用于上传等只需要“token 有效”的场景（token 从 url 参数取）。
- */
-export function verifyToken(token?: string): AccessPayload | null {
-  if (!token || !token.startsWith('eyJ')) return null;
-  return verifyAccess(token);
 }
 
 /* ---------- 密码验证 ---------- */
@@ -114,7 +113,7 @@ function verifyPassword(plain: string, user: any): void {
 
 async function loadUserRoles(uid: string): Promise<string[]> {
   const m = user.getModel();
-  const doc = await m.findById(uid).select('roles').lean() as any;
+  const doc = await m.findOne({ _id: uid, isDeleted: { $ne: true } }).select('roles').lean() as any;
   return doc?.roles ?? [];
 }
 
@@ -137,9 +136,9 @@ export async function resolveUserCtx(authHeader?: string): Promise<Context> {
 
   // eyJ... 前缀 → JWT
   if (token.startsWith('eyJ')) {
-    const result = verifyAccess(token);
-    if (result) {
-      ctx.uid = result.uid;
+    const res = verifyAccess(token);
+    if (res) {
+      ctx.uid = res.uid;
       ctx.roles = await loadUserRoles(ctx.uid);
     }
     return ctx;
@@ -176,6 +175,7 @@ async function authChall(params: Record<string, any>, _ctx: Context): Promise<an
 async function authLogin(params: Record<string, any>, _ctx: Context): Promise<any> {
   const username: string | undefined = params?.username;
   const password: string | undefined = params?.password;
+  const scene: string | undefined = params?.scene;
   const chall: Record<string, any> | undefined = params?.chall;
 
   if (!username || typeof username !== 'string') {
@@ -196,22 +196,27 @@ async function authLogin(params: Record<string, any>, _ctx: Context): Promise<an
       password: { $exists: true, $ne: '' },
       isDeleted: { $ne: true },
     })
-    .select('_id username name avatar +password +passsalt')
+    .select('_id username name avatar roles +password +passsalt')
     .lean() as any;
 
   if (!u) {
     throw new CrudError('Invalid credentials', CrudErrno.PARAMS_INVALID, { reason: 'bad_credentials' });
   }
 
-  // 3. 密码比对
+  // 3. 验证场景
+  if (scene && !isPermitted(scene, u.roles || [])) {
+    throw new CrudError('Not permitted scene', CrudErrno.PARAMS_INVALID, { reason: 'bad_credentials' });
+  }
+
+  // 4. 密码比对
   verifyPassword(password, u);
 
-  // 4. 签发 access JWT
+  // 5. 签发 access JWT
   const uid = String(u._id);
   const now = Date.now();
   const accessToken = signAccess(uid);
 
-  // 5. 写 refresh token
+  // 6. 写 refresh token
   const refreshKey = genApiKey('rt-');
   const apiKeyModel = userApiKey.getModel();
   await apiKeyModel.create({
@@ -270,6 +275,36 @@ async function authRefresh(params: Record<string, any>, _ctx: Context): Promise<
   };
 }
 
+/* ---------- func: auth.permits ---------- */
+
+async function authPermits(params: Record<string, any>, ctx: Context): Promise<any> {
+  if (! ctx.uid) {
+    throw new CrudError('Login required', CrudErrno.LOGIN_REQUIRED, { reason: 'login_required' });
+  }
+
+  const methods = Array.isArray(params?.methods) ? params.methods : [];
+  const allowed = new Set<string>();
+  const matched = new Set<string>();
+  const permits : string[] = [];
+
+  for (const role of ctx.roles || []) {
+    try {
+      for (const act of getRole(role)) allowed.add(act);
+    } catch {
+      // 未注册的角色忽略
+    }
+  }
+
+  for (const raw of methods) {
+    if (typeof raw !== 'string' || ! raw || matched.has(raw)) continue;
+    if (! allowed.has(raw)) continue;
+    matched.add (raw);
+    permits.push(raw);
+  }
+
+  return { permits };
+}
+
 /* ---------- func: auth.logout ---------- */
 
 async function authLogout(params: Record<string, any>, _ctx: Context): Promise<any> {
@@ -288,4 +323,5 @@ export function regAuthFuncs(): void {
   regFunc('auth.login',   authLogin);
   regFunc('auth.logout',  authLogout);
   regFunc('auth.refresh', authRefresh);
+  regFunc('auth.permits', authPermits);
 }

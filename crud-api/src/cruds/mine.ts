@@ -145,13 +145,24 @@ export class MineApiKey extends UserApiKey implements Crud {
     return super.delete(params as any, ctx);
   }
   
-  /* ----- search：userId === uid && app=sk ----- */
+  /* ----- search：userId === uid && app=sk；强制剔除 key ----- */
 
   search(params: any, ctx: Context): SearchResult {
     const uid = requireUid(ctx, 'mineApiKey.search');
     params = { ...(params || {}) };
     const uidOid = new ObjectId(uid);
     params.find = { ...(params.find || {}), userId: uidOid, app: 'sk' };
+
+    // key 只在创建时返回一次，之后任何查询都不给
+    const cols: Record<string, any> = { ...(params.cols || {}) };
+    if (! params.cols || Object.values(params.cols).includes(0)) {
+      cols.key = 0;
+    } else {
+      delete cols.key;
+      if (! Object.keys(cols).length) cols.key = 0;
+    }
+    params.cols = cols;
+
     return super.search(params as any, ctx);
   }
 }
