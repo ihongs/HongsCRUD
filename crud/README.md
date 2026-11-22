@@ -2,9 +2,11 @@
 
 基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `statis / upsert / schema` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
 
-另含可选的检索组件 `Chaser`（从 `hongs-crud/es` 引入），把 `search` / `statis` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 4 节。
+另含可选的轻量检索组件 `Chaser`（从 `hongs-crud/cs` 引入），不依赖外部搜索引擎，把 `textable` 字段分词后存入集合内的 `fullText` 字段，用 MongoDB `$text` 索引做全文检索与打分，见第 4 节。
 
-另含可选的键值组件 `Roster`（接口在 `hongs-crud/kv`，实现在 `hongs-crud/kv/mongo` 与 `hongs-crud/kv/redis`），基于 MongoDB 或 Redis 存取带有效期的键值记录，适合验证码、上传令牌等短命数据，见第 5 节。
+另含可选的检索组件 `Chaser`（从 `hongs-crud/es` 引入），把 `search` / `statis` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 5 节。
+
+另含可选的键值组件 `Roster`（接口在 `hongs-crud/kv`，实现在 `hongs-crud/kv/mongo` 与 `hongs-crud/kv/redis`），基于 MongoDB 或 Redis 存取带有效期的键值记录，适合验证码、上传令牌等短命数据，见第 6 节。
 
 源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
@@ -12,7 +14,7 @@
 npm install hongs-crud
 ```
 
-> 依赖（peer）：mongoose `^7 || ^8`；`@elastic/elasticsearch` `^8`（可选，仅使用 ES 检索组件时需要）；`redis` `^4`（可选，仅使用 KV 的 RedisRoster 时需要）
+> 依赖（peer）：mongoose `^7 || ^8`；`@node-rs/jieba` `^2`（可选，仅使用 CS 检索组件的 jieba 分词器时需要）；`@elastic/elasticsearch` `^8`（可选，仅使用 ES 检索组件时需要）；`redis` `^4`（可选，仅使用 KV 的 RedisRoster 时需要）
 
 ---
 
@@ -486,11 +488,116 @@ enum CrudErrno {
 
 ---
 
-## 4. ES 检索组件（Chaser）
+## 4. CS 检索组件（Chaser）
+
+`hongs-crud/cs` 的 `Chaser` 继承 `Cradle`，不依赖外部搜索引擎：写入时把 `textable: true` 字段的分词结果拼进集合内的 `fullText` 字段，查询时用同一分词器处理 `wd`，交给 MongoDB 原生 `$text` 索引检索与打分。适合需要中文分词检索、又不想额外部署 ES 的项目。与 ES 组件类名相同（都叫 `Chaser`），但来自不同 subpath，按需选用。
+
+### 4.1 引入与初始化
+
+从 subpath `hongs-crud/cs` 引入，主入口 `hongs-crud` 不含 `cs`：
+
+```ts
+import { Schema } from 'mongoose';
+import { Chaser } from 'hongs-crud/cs';
+
+const articleSchema = new Schema({
+  title : { type: String, textable: true },   // 分词入 fullText，wd 可搜
+  body  : { type: String, textable: true },
+  tags  : { type: [String], textable: true },
+  author: { type: String },                    // 不标 textable，不进全文，仍可 find / sort
+}, {
+  collection: 'articles',
+  searchOpts: {},            // 必填：开启搜索，自动为 fullText 建 text 索引
+});
+
+const articleCrud = new Chaser(articleSchema);
+```
+
+- `searchOpts` 存在时，mongoose 全局插件为 `fullText` 建 `text` 索引，`default_language: 'none'`（不做英文停用词与词干处理，分词交给组件）。
+- 构造时自动补 `fullText`（全文字段，`select: false`）与 `_score`（打分字段，`select: false`）；Schema 已声明同名字段则复用，类型不符抛 `INTERNEL_ERROR`。
+- 同一集合只能有一个 text 索引，与自定义的 `schema.index({ ...: 'text' })` 冲突由使用方自行保证。
+
+Schema 选项（`searchOpts`）：
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| `fullText` | `'fullText'` | 存放分词结果的全文字段名 |
+| `scoreKey` | `'_score'` | 打分字段名，`wd` 检索时并入投影与默认排序 |
+| `segmenter` | `defaultSegmenter` | 分词函数 `(text: string) => string[]`，见 4.4 |
+
+### 4.2 字段扩展项
+
+| 扩展项 | 默认 | 说明 |
+|---|---|---|
+| `textable` | `false` | `String` 字段标 `textable: true` 才分词并入 `fullText`；支持 `[String]` 数组与子文档路径（点号拼接）；`select: false` 的字段同样参与（`set` 后按 id 补查） |
+
+未标 `textable` 的字段照常存取、可 `find` / `sort` / `statis`，只是不进全文检索。
+
+### 4.3 拆词存储与检索
+
+写入（拆词存储）：
+
+- `add`（`create` / `upsert` 新增都走这里）：`getFullText(doc)` 收集所有 `textable` 字段值（数组展开、去空、`join(' ')`），经分词器切成词串，写入 `fullText` 后交给 `Cradle` 落库。
+- `set`（`update` / `setAll` / `upsert` 更新都走这里）：落库后按合并后的完整文档重算 `fullText`；存在 `select: false` 的 `textable` 字段时按 id 补查一遍再算，避免丢失这些字段的词。
+- 默认 `getFullText` 只取文本字段原始值；需要把码值翻译成标签（如 `status: 1` → 「已发布」）、拼入关联名称等派生文本时，覆盖它即可：
+
+```ts
+class ArticleChaser extends Chaser {
+  protected getFullText(doc: any): string {
+    return [
+      super.getFullText(doc),            // 默认的 textable 字段拼接
+      STATUS[doc.status] || '',          // 码值 -> 标签
+    ].filter(Boolean).join(' ');
+  }
+}
+```
+
+查询（搜索）：
+
+- `search` / `statis` 收到 `wd` 时，先用同一分词器把关键词切成词串，再作为 `$text: { $search }` 条件；`wd` 为空、或分词后为空时退回普通 `Cradle` 逻辑（等价于不传 `wd`）。
+- 默认按 `_score` 降序，并把 `_score` 并入 `cols` 投影供前端展示；调用方传了 `sort` 则以外部排序为准，`_score` 仍透出。`cols` 白名单会自动带上 `_score`。
+- 其余参数（`find` / `cols` / `start` / `limit` / `mode` / `refs`）与 `Cradle.search` 完全一致；`find` 与排序不经过分词，只有 `wd` 走全文。
+
+```ts
+await articleCrud.search({ wd: 'mongodb 分词', limit: 20 }, ctx);
+// → { list: [{ ...doc, _score: 1.2 }, ...], total }
+```
+
+> `$text` 是整词匹配：能否命中取决于分词结果。默认分词器把「管理员」切成「管理 / 员」，所以搜「管理」能命中；但搜「理员」这类跨词片段不会命中，需要更高召回就换分词器（见 4.4）。
+
+### 4.4 更换分词器
+
+分词器就是一个 `(text: string) => string[]` 函数，写入与查询两侧共用同一个实例，保证词串口径一致。
+
+| 方式 | 用法 | 说明 |
+|---|---|---|
+| 默认 | 不配置 | `defaultSegmenter`：`Intl.Segmenter` word 粒度，过滤非词项并小写，中英文通用、零依赖 |
+| jieba | `buildJiebaSegmenter({ mode, hmm })` | 需安装 `@node-rs/jieba`（可选 peer，惰性加载，未装抛 `INTERNEL_ERROR`）；`mode: 'cut'` 精确分词（默认），`'search'` 含子词、召回更高 |
+| 自定义 | 任意函数 | 交给 `searchOpts.segmenter`，可接公司词库、拼音、同义词扩展等 |
+
+```ts
+import { Schema } from 'mongoose';
+import { Chaser, buildJiebaSegmenter } from 'hongs-crud/cs';
+
+const articleSchema = new Schema({ /* ... */ }, {
+  collection: 'articles',
+  searchOpts: {
+    segmenter: buildJiebaSegmenter({ mode: 'search' }),
+  },
+});
+```
+
+- **换了分词器必须重写存量数据**：`fullText` 里存的是旧分词器切好的词串，换实现或改 `mode` 后旧文档不会自动重算，需全量重写一遍（按业务路径逐条 `set` 即可），否则只有新增与修改过的文档能被新口径检索到。
+- 无需重建索引：`text` 索引只按空格切分 `fullText`，具体分词在应用层完成，换分词器不涉及索引变更（与 ES 组件需 `initIndex()` 重建不同）。
+- 分词器在构造 `Chaser` 时固定，运行期不切换；不同集合需要不同分词器时，各建各的 Schema 与实例即可。
+
+---
+
+## 5. ES 检索组件（Chaser）
 
 `Chaser` 继承自 `Cradle`，在保留全部 CRUD 能力的基础上，把 `search` / `statis` 的查询执行搬到 Elasticsearch（全文检索、多条件过滤、聚合统计），并在写入后自动同步索引。适合数据量大、需要全文检索或复杂筛选联动的场景；mongo 始终是权威数据源，ES 只承担查询。
 
-### 4.1 引入与初始化
+### 5.1 引入与初始化
 
 从 subpath `hongs-crud/es` 引入，主入口 `hongs-crud` 不含 `es`：
 
@@ -516,7 +623,7 @@ const userCrud = new Chaser(userSchema);
 | 类型检查 | 不报错，无需 `skipLibCheck` | subpath 隔离，不 `import 'hongs-crud/es'` 就不会加载其类型声明 |
 | 打包 | 不报 `module not found`、无告警 | `es` 内对 ES 客户端只用 `import type`，产物零引用 |
 
-类与全局客户端（同步选项与统计见 4.5）：
+类与全局客户端（同步选项与统计见 5.5）：
 
 ```ts
 export class Chaser extends Cradle {
@@ -543,13 +650,13 @@ export class Chaser extends Cradle {
   search(params: SearchParams, ctx: Context): Promise<SearchResult>;
   statis(params: StatisParams, ctx: Context): Promise<StatisResult>;
 
-  /* ---------- 覆盖：写后同步（esAutoSync，见 4.5） ---------- */
+  /* ---------- 覆盖：写后同步（esAutoSync，见 5.5） ---------- */
   add   (data: Record<string, any>): [ any, string ];
   set   (id : string, data: Record<string, any>): [ any, number ];
   putAll(ids: string[], data : Record<string, any>): number;
   delAll(ids: string[], data?: Record<string, any>): number;
 
-  /* ---------- 索引与同步（见 4.5 / 4.6） ---------- */
+  /* ---------- 索引与同步（见 5.5 / 5.6） ---------- */
   makeIndex(): Promise<void>;
   initIndex(): Promise<void>;
   dropIndex(): Promise<void>;
@@ -567,7 +674,7 @@ export function getEsClient(): Client | undefined;
 
 构造方法只在 `Cradle` 的 `model` 之后加一个 `es`，其余可调项（索引名、合并字段名、分词器、是否自动同步等）一律放在 Schema 扩展选项里，见下节。
 
-### 4.2 Schema 扩展选项
+### 5.2 Schema 扩展选项
 
 ```ts
 const userSchema = new Schema({
@@ -595,7 +702,7 @@ Schema 扩展选项：
 |---|---|---|
 | `esIndex` | `collection` | ES 索引名 |
 | `esFullText` | `'fullText'` | 合并搜索字段名，`wd` 的查询目标 |
-| `esSyncTime` | `'syncTime'` | 同步戳字段名，每次写入 ES 时置为当前时间，见 4.5 |
+| `esSyncTime` | `'syncTime'` | 同步戳字段名，每次写入 ES 时置为当前时间，见 5.5 |
 | `esAnalyzer` | 无（ES 的 `standard`） | 索引内所有分词字段（`textable` 的 `.text` 子字段与合并字段）的默认分词器，可被字段级 `analyzer` 覆盖 |
 | `esAutoSync` | `true` | 写入（`add` / `set` / `putAll` / `delAll`）后是否自动同步 ES；`false` 则完全交给定时 `syncFind` |
 | `esSyncError` | `console.error` | 同步失败回调 `(err, info) => void` |
@@ -606,7 +713,7 @@ Schema 扩展选项：
 |---|---|---|
 | `syncable` | `true` | 是否纳入 ES 索引；`false` 则该字段（容器字段则整棵子树）不进 ES，`find` / `wd` / `sort` 引用时抛 `CrudErrno.PARAMS_INVALID`，但不影响返回（文档一律回 mongo 取） |
 | `textable` | `false` | String 是否附 `.text` 子字段（分词、并入全文，`wd` 可搜）；`false` 仍进索引、仍可单独 `find` / `sort`（主类型 keyword），供备注、日志这类无需全文的长文本使用 |
-| `nested` | `false` | 数组子文档标 `nested: true` 才映射为 ES `nested`（保留元素关联），默认按扁平模式，见 4.4 |
+| `nested` | `false` | 数组子文档标 `nested: true` 才映射为 ES `nested`（保留元素关联），默认按扁平模式，见 5.4 |
 | `analyzer` | 无 | 字段级分词器，覆盖 Schema 级 `esAnalyzer`；只对 `textable: true` 的 String 有效，标在其他字段上视为配置矛盾，构造时抛 `CrudErrno.INTERNEL_ERROR` |
 | `termsize` | `256` | `textable` 字段 keyword 主字段的截断阈值（`ignore_above`）：超过的长串不进 keyword，等值匹配本就不可靠；`0` 不要 keyword 视角（主字段纯 text，只搜不精确匹配，省索引，等值 / 排序 / 聚合静默不命中不报错）；`-1` 不限长（超长串也能精确匹配）；仅对 `textable` 生效，改它需 `initIndex()` 重建 |
 
@@ -615,7 +722,7 @@ Schema 扩展选项：
 - **默认全同步**：Schema 中所有可映射字段一律纳入索引，仅 `syncable: false` 与不可映射类型（如 `Map`）不进。
 - `select: false` 的字段**默认照常同步**：`select` 只管「能否显示」，不管「能否查询」；同步进 ES 后可查、可排序，但不会出现在返回中（`cols` 显式指定时可取出）。确实不该入索引的（如密码）显式加 `syncable: false`。
 - `countable: true` 仍单独决定可否被 `statis()` 统计，但字段须先在索引内；与 `syncable: false` 并用视为配置矛盾，构造时抛 `CrudErrno.INTERNEL_ERROR`。
-- 启用 `softDelete` 时，`isDeleted` / `deletedAt` 不入索引（ES 只留有效文档，见 4.4 / 4.5）；`timestamps` 的 `createdAt` / `updatedAt` 自动入索引，可直接排序与范围过滤。
+- 启用 `softDelete` 时，`isDeleted` / `deletedAt` 不入索引（ES 只留有效文档，见 5.4 / 5.5）；`timestamps` 的 `createdAt` / `updatedAt` 自动入索引，可直接排序与范围过滤。
 - **`esFullText` / `esSyncTime` 是组件内部字段**，分别承担全文检索与同步水位，不可在 `find` / `sort` / `statis` 中引用（引用时同不可映射字段一样抛 `PARAMS_INVALID`）；与业务字段撞名时改 Schema 选项避开即可。
 
 分词器：
@@ -623,9 +730,9 @@ Schema 扩展选项：
 - 两级配置、就近覆盖：Schema 选项 `esAnalyzer` 定索引默认，字段扩展项 `analyzer` 就近覆盖，都不设则不写 `analyzer`，由 ES 用 `standard`（中文按字切分，可满足基本包含式检索）。
 - 组件不负责安装分词插件：配了 ES 未安装的分词器，建索引时由 ES 直接报错。
 - `wd` 的分词只由合并字段（取 `esAnalyzer`）决定：`getFullText()` 拼进去的是原始文本，源字段各自的 `analyzer` 不影响 `wd`。
-- **改分词器要重建索引**：已建索引的字段换 `analyzer` 会被 ES 拒绝，只能 `initIndex()` + `syncFind()`，见 4.6。
+- **改分词器要重建索引**：已建索引的字段换 `analyzer` 会被 ES 拒绝，只能 `initIndex()` + `syncFind()`，见 5.6。
 
-### 4.3 类型映射与全文检索
+### 5.3 类型映射与全文检索
 
 mongoose 到 ES mapping 的类型推导：
 
@@ -670,7 +777,7 @@ class UserChaser extends Chaser {
 
 - 改 `getFullText` 的实现不涉及 mapping，**只需 `syncFind()` 重写一遍数据**即生效，无需重建索引；改某字段的 `textable` 会增删 `.text` 子字段（mapping 变更），须走 `initIndex()` 重建。
 
-### 4.4 查询行为
+### 5.4 查询行为
 
 `find` 保持 mongo 风格，内部翻译为 ES DSL，全部进 `filter` 上下文（不参与打分）；支持 `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$nin` / `$regex` / `$exists` / `$search` 与 `$and` / `$or` / `$not` 与字段等值（含 `null`），不认识的写法抛 `CrudErrno.PARAMS_INVALID`。其余约定：
 
@@ -717,7 +824,7 @@ class MyChaser extends Chaser {
 - 脚本引用的字段必须已入索引（`syncable` 非 false 且有 doc values）；虚拟字段名被剥离，不参与 `_leaves` 校验。
 - `_script` 逐文档计算、无法利用索引序，数据量大时建议物化：重写 `esDoc()` 算好加权值存成真实字段（mapping 同步声明），`getSort` 走普通排序。传了 `sort` 即不再按 `_score` 排，但 `_score` 仍并入返回文档。
 
-### 4.5 同步
+### 5.5 同步
 
 写入自动同步（`esAutoSync` 默认 `true`）：
 
@@ -785,7 +892,7 @@ interface SyncStat {
 - 全量 `syncFind()` 成本远高于增量（扫 mongo 全量并重写整个索引），百万级可每天跑、千万级建议低峰期每天一次、亿级建议每周或按段切分；不要与增量同步混在一个定时任务里。
 - 不引入队列与重试机制：失败明细记入 `SyncStat.errors`，由下一次定时 `syncFind` 自然补偿。
 
-### 4.6 Schema 变更后的索引维护
+### 5.6 Schema 变更后的索引维护
 
 ES 的硬约束决定了各类变更不能一概而论：
 
@@ -810,7 +917,7 @@ await userCrud.syncFind();
 
 ---
 
-## 5. KV 存储组件（Roster）
+## 6. KV 存储组件（Roster）
 
 `Roster` 是带有效期的键值存取接口：`set` 存，`get` 取，过期无效。适合验证码、操作令牌、防重放 nonce 等短命数据。接口与注册器从 subpath `hongs-crud/kv` 引入，实现在 `hongs-crud/kv/mongo`（mongoose）与 `hongs-crud/kv/redis`（node-redis v4），按需选用，主入口 `hongs-crud` 均不含：
 
@@ -844,13 +951,13 @@ await kv.getAll('token:abc');                     // → { key, value, expiresAt
 
 亦可在代码里显式注册（优先于 `KV_ROSTER`）：`regRoster(new YourRoster())`，之后 `getRoster()` 获取全局单例。未设置且未注册时首次调用抛 `INTERNEL_ERROR`。
 
-### 5.1 MongoRoster（hongs-crud/kv/mongo）
+### 6.1 MongoRoster（hongs-crud/kv/mongo）
 
 基于 mongoose（主库已有 peer 依赖，无需额外安装）。`new MongoRoster(collection?)`，`collection` 未传时读 `KV_ROSTER_COLLECTION`，默认集合 `rosters`。
 
 > 过期记录不即时删除：`get` / `getAll` 查询时按 `expiresAt` 过滤即可，无需写后清理；记录量大了再定期（如每日）调 `cleanup()`。同 key 重复 `set` 为覆盖语义，`value` 与 `expiresAt` 一并更新，`createdAt` 保留首次。`key` 建有唯一索引：`set` 借此避免并发 upsert 产生重复行，`add` 借此实现原子插入。
 
-### 5.2 RedisRoster（hongs-crud/kv/redis）
+### 6.2 RedisRoster（hongs-crud/kv/redis）
 
 基于 node-redis v4（可选 peer 依赖，仅使用本实现时安装）。`new RedisRoster(client?, prefix?)`：`client` 未传时读 `KV_ROSTER_REDIS_URL` 自建客户端（默认 `redis://127.0.0.1:6379`），`prefix` 未传时读 `KV_ROSTER_REDIS_PRE`（默认不隔离），用于同 db 内多实例键隔离。自建或传入未连接的客户端时首次操作自动发起连接（惰性连接），传入已连接的客户端则直接使用：
 
