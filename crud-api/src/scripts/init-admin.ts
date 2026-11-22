@@ -36,7 +36,7 @@ async function main() {
     // 重置密码，并确保拥有 admin 角色、未被软删除
     await (user.set(uid, {
       password,
-      roles: ['admin'],
+      roles: ['root'],
       isDeleted: false,
     }) as unknown as Promise<[ any, number ]>);
     action = 'updated';
@@ -45,7 +45,7 @@ async function main() {
       username: USERNAME,
       password,
       name: '管理员',
-      roles: ['admin'],
+      roles: ['root'],
     }) as unknown as Promise<[ any, string ]>);
     action = 'created';
   }

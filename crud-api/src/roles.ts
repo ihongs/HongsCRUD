@@ -8,6 +8,7 @@ export function regRoles(): void {
 
   // 普通用户：已登录的一般用户
   regRole('user', [
+    'guest',
     'auth.chall', 'auth.logout', 'auth.refresh', 'upload.config',
     'mine.search', 'mine.update', 'mineApiKey.search', 'mineApiKey.create', 'mineApiKey.delete',
   ]);
