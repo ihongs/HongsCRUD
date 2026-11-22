@@ -10,7 +10,7 @@
     "init-admin": "tsx src/scripts/init-admin.ts"
   },
   "dependencies": {
-    "hongs-crud": "^0.2.3",
+    "hongs-crud": "^0.2.4",
     "koa": "^2.15.0",
     "koa-bodyparser": "^4.4.1",
     "mongoose": "^8.0.0"

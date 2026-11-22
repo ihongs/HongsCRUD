@@ -1,18 +1,20 @@
 import { randomBytes, pbkdf2Sync } from 'crypto';
 import { Schema } from 'mongoose';
 import { Cradle, type Context, type SearchResult } from 'hongs-crud';
+import { Chaser } from 'hongs-crud/cs';
 
 /* ---------- User (users) ---------- */
 
 const userSchema = new Schema(
   {
-    username:  { type: String, unique: true },
+    username:  { type: String, unique: true, textable: true },
     password:  { type: String, select: false },
     passsalt:  { type: String, select: false },
-    name:      { type: String },
+    name:      { type: String, textable: true },
+    title:     { type: String, textable: true },
     avatar:    { type: String },
-    email:     { type: String, index: true },
-    phone:     { type: String, index: true },
+    email:     { type: String, index: true, textable: true },
+    phone:     { type: String, index: true, textable: true },
     roles:     { type: [String], default: ['user'], index: true },
   },
   {
@@ -20,13 +22,12 @@ const userSchema = new Schema(
     softDelete: true,
     timestamps: true,
     limitDef: 20,
-  },
+    // cs/Chaser 全文字段与 text 索引：由全局插件按 searchOpts 自动建 fullText 索引
+    searchOpts: {},
+  } as any,
 );
 
-// 复合全文索引：wd 统一走 $text（暂不处理中文分词）
-userSchema.index({ username: 'text', name: 'text', phone: 'text', email: 'text' });
-
-export class User extends Cradle {
+export class User extends Chaser {
   constructor() {
     super(userSchema);
   }
