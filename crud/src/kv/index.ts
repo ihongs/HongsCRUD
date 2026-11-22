@@ -29,6 +29,9 @@ const ROSTER = new class implements Roster {
   set(key: string, value: any, expires: Date | number): Promise<void> {
     return getRoster().set(key, value, expires);
   }
+  add(key: string, value: any, expires: Date | number): Promise<boolean> {
+    return getRoster().add(key, value, expires);
+  }
   del(key: string): Promise<void> {
     return getRoster().del(key);
   }

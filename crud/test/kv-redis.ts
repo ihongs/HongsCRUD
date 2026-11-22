@@ -11,7 +11,8 @@ const PREFIX    = 'test:roster:';
 
 // 测试用到的全部键，开头结尾各清一遍（del 幂等）
 const KEYS = ['kv:str', 'kv:date', 'kv:over', 'kv:arr', 'kv:obj', 'kv:rec',
-  'kv:gone', 'kv:gone2', 'kv:old', 'kv:c1s', 'kv:del', 'kv:shared'];
+  'kv:gone', 'kv:gone2', 'kv:old', 'kv:c1s', 'kv:del', 'kv:shared',
+  'kv:add', 'kv:add-old', 'kv:add-race'];
 
 /* ---------- 断言工具（与 test/crud.ts 一致） ---------- */
 
@@ -126,13 +127,29 @@ async function main(): Promise<void> {
   await roster2.set('kv:shared', 'other', 60);
   assert('另一前缀实例互不覆盖', await roster.get('kv:shared'), 'shared');
 
-  /* ---------- 7) cleanup ---------- */
-  console.log('\n--- 7) cleanup：Redis TTL 自管，恒返回 0 ---');
+  /* ---------- 7) add：仅当不存在时写入（原子） ---------- */
+  console.log('\n--- 7) add：仅当不存在时写入（原子） ---');
+  assert('首次 add 返回 true', await roster.add('kv:add', 'v1', 60), true);
+  assert('add 后取到值', await roster.get('kv:add'), 'v1');
+  assert('同 key 再 add 返回 false', await roster.add('kv:add', 'v2', 60), false);
+  assert('add 不覆盖已有值', await roster.get('kv:add'), 'v1');
+
+  // 过期记录视同不存在，可重新写入
+  await roster.set('kv:add-old', 'old', new Date(Date.now() - 1000));
+  assert('过期记录可被 add 重新写入', await roster.add('kv:add-old', 'new', 60), true);
+  assert('重新 add 后取到新值', await roster.get('kv:add-old'), 'new');
+
+  // 并发 add 同一 key：只能成功一次
+  const added = await Promise.all(Array.from({ length: 8 }, () => roster.add('kv:add-race', 1, 60)));
+  assert('并发 add 仅一个成功', added.filter(Boolean).length, 1);
+
+  /* ---------- 8) cleanup ---------- */
+  console.log('\n--- 8) cleanup：Redis TTL 自管，恒返回 0 ---');
   assert('cleanup 恒返回 0', await roster.cleanup(), 0);
   assert('未过期的仍在', await roster.get('kv:shared'), 'shared');
 
-  /* ---------- 8) KV_ROSTER 自动注册：无参构造与惰性连接 ---------- */
-  console.log('\n--- 8) KV_ROSTER 自动注册：无参构造与惰性连接 ---');
+  /* ---------- 9) KV_ROSTER 自动注册：无参构造与惰性连接 ---------- */
+  console.log('\n--- 9) KV_ROSTER 自动注册：无参构造与惰性连接 ---');
   // './' 开头相对 cwd 解析；dist-test/src 与本测试 import 的 '../src' 编译后指向同一副本，可 instanceof
   process.env.KV_ROSTER           = './dist-test/src/kv/redis';
   process.env.KV_ROSTER_REDIS_URL = REDIS_URL;

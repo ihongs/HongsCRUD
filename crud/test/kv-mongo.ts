@@ -134,6 +134,24 @@ async function main(): Promise<void> {
   assert('cleanup 显式传当前时间清掉其余过期记录', await roster.cleanup(new Date()), 2);
   assert('未过期的仍在', await roster.get('kv:shared'), 'shared');
 
+  /* ---------- 8) add：仅当不存在时写入（原子） ---------- */
+  console.log('\n--- 8) add：仅当不存在时写入（原子） ---');
+  await mongoose.model('Roster_' + COLLECTION).init();   // 等唯一索引建好（add 依赖它）
+
+  assert('首次 add 返回 true', await roster.add('kv:add', 'v1', 60), true);
+  assert('add 后取到值', await roster.get('kv:add'), 'v1');
+  assert('同 key 再 add 返回 false', await roster.add('kv:add', 'v2', 60), false);
+  assert('add 不覆盖已有值', await roster.get('kv:add'), 'v1');
+
+  // 过期记录视同不存在，可重新写入
+  await roster.set('kv:add-old', 'old', new Date(Date.now() - 1000));
+  assert('过期记录可被 add 重新写入', await roster.add('kv:add-old', 'new', 60), true);
+  assert('重新 add 后取到新值', await roster.get('kv:add-old'), 'new');
+
+  // 并发 add 同一 key：只能成功一次
+  const added = await Promise.all(Array.from({ length: 8 }, () => roster.add('kv:add-race', 1, 60)));
+  assert('并发 add 仅一个成功', added.filter(Boolean).length, 1);
+
   /* ---------- 收尾 ---------- */
   await mongoose.connection.dropCollection(COLLECTION).catch(() => {});
   await mongoose.disconnect();

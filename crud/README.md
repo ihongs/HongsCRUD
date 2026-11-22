@@ -825,6 +825,7 @@ await kv.getAll('token:abc');                     // → { key, value, expiresAt
 | 方法 | 说明 |
 |---|---|
 | `set(key, value, expires)` | 写入并覆盖同 key 记录；`expires` 为 `Date` 表示到期时间，为 `number` 表示多少秒后失效 |
+| `add(key, value, expires)` | 仅当 key 不存在时写入，返回是否写入成功；原子操作，用于一次性标记/防重放 |
 | `get(key)` | 取值，过期或不存在返回 `null` |
 | `getAll(key)` | 取完整记录 `{ key, value, expiresAt, createdAt, updatedAt }` |
 | `getAndDel(key)` | 取值并删除，过期或不存在返回 `null` |
@@ -847,7 +848,7 @@ await kv.getAll('token:abc');                     // → { key, value, expiresAt
 
 基于 mongoose（主库已有 peer 依赖，无需额外安装）。`new MongoRoster(collection?)`，`collection` 未传时读 `KV_ROSTER_COLLECTION`，默认集合 `rosters`。
 
-> 过期记录不即时删除：`get` / `getAll` 查询时按 `expiresAt` 过滤即可，无需写后清理；记录量大了再定期（如每日）调 `cleanup()`。同 key 重复 `set` 为覆盖语义，`value` 与 `expiresAt` 一并更新，`createdAt` 保留首次。
+> 过期记录不即时删除：`get` / `getAll` 查询时按 `expiresAt` 过滤即可，无需写后清理；记录量大了再定期（如每日）调 `cleanup()`。同 key 重复 `set` 为覆盖语义，`value` 与 `expiresAt` 一并更新，`createdAt` 保留首次。`key` 建有唯一索引：`set` 借此避免并发 upsert 产生重复行，`add` 借此实现原子插入。
 
 ### 5.2 RedisRoster（hongs-crud/kv/redis）
 

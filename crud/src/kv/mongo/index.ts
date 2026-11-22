@@ -10,13 +10,15 @@ import type { Roster, Rowset } from '../types';
 export * from '../types';
 
 // 按集合名缓存已编译 model，同进程多次 new MongoRoster 复用，避免重复编译报错
+// key 建唯一索引：set 依赖它避免并发 upsert 产生重复行，add 依赖它实现原子插入；
+// 历史集合若已有重复 key，需先清理，否则索引创建会失败
 const MODELS = new Map<string, Model<any>>();
 
 function getRosterModel(collection: string): Model<any> {
   let m = MODELS.get(collection);
   if (! m) {
     const schema = new Schema({
-      key      : { type: String, required: true },
+      key      : { type: String, required: true, unique: true },
       value    : { type: Schema.Types.Mixed },
       expiresAt: { type: Date, required: true },
     }, { collection, timestamps: true });
@@ -43,11 +45,12 @@ export class MongoRoster implements Roster {
   }
 
   // 获取记录并删除
+  // findOneAndDelete 是单文档原子操作：并发同 key 时只有一个调用能拿到记录，其余返回 null
   async getAllAndDel(key: string): Promise<Rowset | null> {
-    const record = await this.getAll(key);
-    if (! record) return null;
-    await this.del(key);
-    return record;
+    const record = await this._model
+      .findOneAndDelete({ key, expiresAt: { $gt: new Date() } })
+      .lean();
+    return record as Rowset | null;
   }
 
   // 获取值
@@ -71,6 +74,26 @@ export class MongoRoster implements Roster {
       { $set: { value, expiresAt } },
       { upsert: true },
     );
+  }
+
+  // 添加值和有效期，同 key 不覆盖
+  // expires 为 Date 表示到期时间，为 number 表示多少秒后失效
+  // key 不存在 → upsert 插入
+  // 已过期     → filter 命中并原地更新（视同不存在，可重新写入）
+  // 未过期     → upsert 被唯一索引挡下（E11000），判定为已存在
+  async add(key: string, value: any, expires: Date | number): Promise<boolean> {
+    const expiresAt = expires instanceof Date ? expires : new Date(Date.now() + expires * 1000);
+    try {
+      await this._model.updateOne(
+        { key, expiresAt: { $lte: new Date() } },
+        { $set: { value, expiresAt } },
+        { upsert: true },
+      );
+      return true;
+    } catch (e: any) {
+      if (e?.code !== 11000) throw e;
+      return false;
+    }
   }
 
   // 删除记录，不存在时无效果

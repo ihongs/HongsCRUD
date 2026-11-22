@@ -24,6 +24,8 @@ export interface Roster {
   getAllAndDel(key: string): Promise<Rowset | null>;
   /** 写入并覆盖同 key 记录 */
   set(key: string, value: any, expires: Date | number): Promise<void>;
+  /** 仅当 key 不存在时写入，返回是否写入成功；原子操作，用于一次性标记/防重放 */
+  add(key: string, value: any, expires: Date | number): Promise<boolean>;
   /** 删除记录，不存在时无效果 */
   del(key: string): Promise<void>;
   /** 清理过期记录，返回删除数；redis 实现由 TTL 自管，恒返回 0 */
