@@ -1,6 +1,6 @@
 {
   "name": "hongs-crud",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Hong's CRUD library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,13 +9,13 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./es": {
-      "types": "./dist/es/index.d.ts",
-      "default": "./dist/es/index.js"
-    },
     "./cs": {
       "types": "./dist/cs/index.d.ts",
       "default": "./dist/cs/index.js"
+    },
+    "./es": {
+      "types": "./dist/es/index.d.ts",
+      "default": "./dist/es/index.js"
     },
     "./kv": {
       "types": "./dist/kv/index.d.ts",
@@ -32,11 +32,11 @@
   },
   "typesVersions": {
     "*": {
-      "es": [
-        "dist/es/index.d.ts"
-      ],
       "cs": [
         "dist/cs/index.d.ts"
+      ],
+      "es": [
+        "dist/es/index.d.ts"
       ],
       "kv": [
         "dist/kv/index.d.ts"
@@ -56,8 +56,8 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "test:crud": "tsc -p tsconfig.test.json && node dist-test/test/crud.js",
-    "test:es": "tsc -p tsconfig.test.json && node dist-test/test/es.js",
     "test:cs": "tsc -p tsconfig.test.json && node dist-test/test/cs.js",
+    "test:es": "tsc -p tsconfig.test.json && node dist-test/test/es.js",
     "test:kv": "tsc -p tsconfig.test.json && node dist-test/test/kv.js",
     "test:kv:mongo": "tsc -p tsconfig.test.json && node dist-test/test/kv-mongo.js",
     "test:kv:redis": "tsc -p tsconfig.test.json && node dist-test/test/kv-redis.js"
