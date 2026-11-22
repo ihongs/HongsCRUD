@@ -23,7 +23,7 @@ const userSchema = new Schema(
   },
 );
 
-// 复合全文索引：wd 走 $text；中文关键词由 User.search 内部转 $regex
+// 复合全文索引：wd 统一走 $text（暂不处理中文分词）
 userSchema.index({ username: 'text', name: 'text', phone: 'text', email: 'text' });
 
 export class User extends Cradle {
@@ -87,23 +87,11 @@ export class User extends Cradle {
   }
 
   /**
-   * 管理端搜索：
-   * 1. wd 含中文 → 转 find.$or 正则（Mongo text 索引不切中文），否则保持 wd 走 $text；
-   * 2. 强制剔除 password / passsalt，任何 cols 组合都拿不到。
+   * 管理端搜索：强制剔除 password / passsalt，任何 cols 组合都拿不到。
+   * wd 交给底层 $text，不做正则回退。
    */
   override search(params: any, ctx: Context): SearchResult {
     params = { ...(params || {}) };
-
-    const wd = typeof params.wd === 'string' ? params.wd.trim() : '';
-    if (wd && /[\u3400-\u9FFF]/.test(wd)) {
-      const kw = wd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const or = ['username', 'name', 'phone', 'email']
-        .map(field => ({ [field]: { $regex: kw, $options: 'i' } }));
-      params.find = params.find && Object.keys(params.find).length
-        ? { $and: [ params.find, { $or: or } ] }
-        : { $or: or };
-      params.wd = undefined;
-    }
 
     const cols: Record<string, any> = { ...(params.cols || {}) };
     if (! params.cols || Object.values(params.cols).includes(0)) {
