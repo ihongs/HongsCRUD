@@ -354,6 +354,17 @@ export class Chaser extends Cradle {
     return conds;
   }
 
+  /** 字段所属的 nested path 链（由外到内，内层为全路径），不在 nested 下为空数组 */
+  private nestedChain(fn: string): string[] {
+    const segs  = fn.split('.');
+    const chain: string[] = [];
+    for (let i = 1; i < segs.length; i ++) {
+      const p = segs.slice(0, i).join('.');
+      if (this._nestedPaths.has(p)) chain.push(p);
+    }
+    return chain;
+  }
+
   /**
    * 翻译单个字段条件，转为 ES 子句
    * 自定义的字段条件可覆盖重写此方法
@@ -595,17 +606,6 @@ export class Chaser extends Cradle {
       );
     }
     conds.push({ clause: { match: { [this._esOpts.esFullText]: text.trim() } }, score: true, scoreAll: true });
-  }
-
-  /** 字段所属的 nested path 链（由外到内，内层为全路径），不在 nested 下为空数组 */
-  private nestedChain(fn: string): string[] {
-    const segs  = fn.split('.');
-    const chain: string[] = [];
-    for (let i = 1; i < segs.length; i ++) {
-      const p = segs.slice(0, i).join('.');
-      if (this._nestedPaths.has(p)) chain.push(p);
-    }
-    return chain;
   }
 
   /** 直查 mongo：透传 Cradle.search 原实现，绕过 ES，供兜底或与索引比对用 */
