@@ -22,8 +22,8 @@ const userSchema = new Schema(
     softDelete: true,
     timestamps: true,
     limitDef: 20,
-    // cs/Chaser 全文字段与 text 索引：由全局插件按 searchOpts 自动建 fullText 索引
-    searchOpts: {},
+    // cs/Chaser：分词器默认 intlSegmenter；csAutoIndex 开启后由插件自动建全文字段 text 索引
+    csAutoIndex: true,
   } as any,
 );
 

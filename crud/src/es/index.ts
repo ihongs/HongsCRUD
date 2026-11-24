@@ -11,7 +11,7 @@ import type { Schema, Model } from 'mongoose';
 import type { Client } from '@elastic/elasticsearch';
 import type { SyncOpts, SyncFindOpts, SyncCullOpts, SyncStat, EsOpts, EsLeaf, EsCond } from './types';
 import type { FindSpec, SortSpec, ColsSpec, SearchParams, SearchResult, StatisParams, StatisResult, Context } from '../types';
-import { Cradle, CrudError, CrudErrno, fillSearchRefs, fillStatisRefs } from '../index';
+import { Cradle, CrudError, CrudErrno, mixFinds, fillSearchRefs, fillStatisRefs } from '../index';
 
 export * from './types';
 
@@ -232,23 +232,18 @@ export class Chaser extends Cradle {
 
   /**
    * 把 find / id / wd 翻译为 ES query DSL（对照表见 2.1），供 search / statis 共用
-   * find 全部进 filter 上下文不计分；wd 非空时追加 match 到 must 参与打分，空则整个查询都在 filter 上下文
+   * 先按 mongo 口径经 mixFinds 合成查询结构（id -> _id，wd -> $text，find 原样），
+   * 再整体交给 collectAnd 翻译；全部条件进 filter 上下文，无任何条件时退化为 match_all
    */
   getQuery(find?: FindSpec, id?: string | string[], wd?: string): Record<string, any> {
-    const conds: EsCond[] = [];
-    if (find) this.collectAnd([find], conds);
-    if (id !== undefined) {
-      // ES 文档 _id 即 mongo _id 的字符串形式，见 2.2
-      const ids = (!Array.isArray(id) ? [id] : id).map(String);
-      conds.push({ clause: { ids: { values: ids } } });
-    }
+    const spec = mixFinds(id, wd, find);
+    if (!Object.keys(spec).length) return { match_all: {} };
 
-    const bool  : Record<string, any> = {};
-    const filter = emitAnd(conds);
-    if (filter.length) bool.filter = filter;
-    const ws = wd?.trim();
-    if (ws) bool.must = [{ match: { [this._esOpts.esFullText]: ws } }];
-    return Object.keys(bool).length ? { bool } : { match_all: {} };
+    const conds: EsCond[] = [];
+    this.collectAnd([spec], conds);
+
+    const filter = emitAnd (conds);
+    return filter.length ? { bool: { filter } } : { match_all: {} };
   }
 
   /**
@@ -258,7 +253,7 @@ export class Chaser extends Cradle {
   protected collectAnd(specs: Record<string, any>[], out: EsCond[]): void {
     for (const spec of specs) {
       for (const [key, val] of Object.entries(spec)) {
-        if (key === '$and' || key === '$or') {
+        if (key === '$and') {
           if (!Array.isArray(val) || !val.every(isPlainObj)) {
             throw new CrudError(
               `"${key}" expects an array of condition objects.`,
@@ -266,16 +261,19 @@ export class Chaser extends Cradle {
               { operator: key },
             );
           }
-          if (key === '$and') {
-            this.collectAnd(val, out);
-            continue;
+          this.collectAnd(val, out);
+          continue;
+        }
+        if (key === '$or') {
+          if (!Array.isArray(val) || !val.every(isPlainObj)) {
+            throw new CrudError(
+              `"${key}" expects an array of condition objects.`,
+              CrudErrno.PARAMS_INVALID,
+              { operator: key },
+            );
           }
-          out.push({ clause: {
-            bool: {
-              should: val.map(b => ({ bool: { filter: emitAnd(this.collectOne(b)) } })),
-              minimum_should_match: 1,
-            },
-          } });
+          const clauses = val.map(b => ({ bool: { filter: emitAnd(this.collectOne(b)) } }));
+          out.push({ clause: { bool: { should: clauses, minimum_should_match: 1 } } });
           continue;
         }
         if (key === '$not') {
@@ -291,6 +289,14 @@ export class Chaser extends Cradle {
           out.push({ clause: clauses.length === 1
             ? { bool: { must_not: [clauses[0]] } }
             : { bool: { must_not: [{ bool: { filter: clauses } }] } } });
+          continue;
+        }
+        if (key === '$text') {
+          this.wdConds(val, out);
+          continue;
+        }
+        if (key === '_id') {
+          this.idConds(val, out);
           continue;
         }
         this.fieldConds(key, val, out);
@@ -408,7 +414,7 @@ export class Chaser extends Cradle {
         }
         case '$search': {
           // 对齐 mongo 的 $text.$search：字段级分词匹配（mongo 社区版无此能力，Chaser 独有）；
-          // match 打 .text 子字段（termsize: 0 时主字段即 text），operator: and 须全部分词命中
+          // match 打 .text 子字段（termsize: 0 时主字段即 text）
           if (!leaf.textable || typeof ov !== 'string' || !ov.trim()) {
             throw new CrudError(
               `"$search" on "${field}" expects a non-empty string on textable fields.`,
@@ -416,9 +422,25 @@ export class Chaser extends Cradle {
               { field, operator: op },
             );
           }
-          push({ match: { [textName(leaf)]: { query: ov, operator: 'and' } } });
+          const logic = value.$searchLogic;
+          const boost = value.$searchBoost;
+          // $searchLogic: all -> and，any -> or；暂只支持这两个值，其余报错，以后扩展
+          if (logic !== undefined && logic !== 'all' && logic !== 'any') {
+            throw new CrudError(
+              `"$searchLogic" on "${field}" expects "all" or "any".`,
+              CrudErrno.PARAMS_INVALID,
+              { field, operator: '$searchLogic', value: logic },
+            );
+          }
+          const match = { query: ov, operator: logic === 'all' ? 'and' : 'or' } as any;
+          if (boost !== undefined) match.boost = boost;
+          push({ match: { [textName(leaf)]: match } });
           break;
         }
+        case '$searchBoost':
+        case '$searchLogic':
+          // 仅作 $search 的修饰项，由上面的 $search 读取，单独出现时不产生条件
+          break;
         default:
           throw new CrudError(
             `Operator "${op}" on "${field}" is not supported in ES translation.`,
@@ -427,6 +449,106 @@ export class Chaser extends Cradle {
           );
       }
     }
+  }
+
+  /**
+   * mongo 的 _id 条件 -> ES ids 查询，可把 mongo 查询条件原样复用
+   * 支持等值 / $eq / $in / $ne / $nin / $exists，其余操作符抛 PARAMS_INVALID
+   * （_id 是 ES 元数据，不在 mapping 的 _leaves 里，走不了 fieldConds）
+   */
+  protected idConds(value: any, out: EsCond[]): void {
+    const push = (clause: Record<string, any>): void => {
+      out.push({ clause });
+    };
+    const ids  = (vals: any[]): Record<string, any> => ({
+      ids: { values: vals.filter(v => v !== null && v !== undefined).map(String) },
+    });
+
+    if (Array.isArray(value)) {
+      throw new CrudError(
+        'Array value on "_id" is not supported, please use "$in" instead.',
+        CrudErrno.PARAMS_INVALID,
+        { field: '_id' },
+      );
+    }
+
+    if (isEmptyObj(value)) {
+      throw new CrudError(
+        `Condition of "_id" is empty.`,
+        CrudErrno.PARAMS_INVALID,
+        { field: '_id', operator: '' },
+      );
+    }
+
+    if (value === null || value === undefined) {
+      push({ match_none: {} });   // _id 恒有值，null 匹配不到任何文档
+      return;
+    }
+
+    if (value instanceof Date || typeof value !== 'object') {
+      push(ids([value]));         // ObjectId / 字符串 / 数字等直接当等值；日期将错就错，与 fieldConds 一致
+      return;
+    }
+
+    for (const [op, ov] of Object.entries(value)) {
+      switch (op) {
+        case '$eq':
+          push(ov === null || ov === undefined
+            ? { match_none: {} }
+            : ids([ov]));
+          break;
+        case '$ne':
+          push(ov === null || ov === undefined
+            ? { match_all: {} }
+            : { bool: { must_not: [ids([ov])] } });
+          break;
+        case '$in':
+          if (!Array.isArray(ov)) {
+            throw new CrudError(
+              `"${op}" expects an array on "_id".`,
+              CrudErrno.PARAMS_INVALID,
+              { field: '_id', operator: op },
+            );
+          }
+          push(ids(ov));
+          break;
+        case '$nin':
+          if (!Array.isArray(ov)) {
+            throw new CrudError(
+              `"${op}" expects an array on "_id".`,
+              CrudErrno.PARAMS_INVALID,
+              { field: '_id', operator: op },
+            );
+          }
+          push({ bool: { must_not: [ids(ov)] } });
+          break;
+        case '$exists':
+          push(ov === false ? { match_none: {} } : { match_all: {} });
+          break;
+        default:
+          throw new CrudError(
+            `Operator "${op}" on "_id" is not supported in ES translation.`,
+            CrudErrno.PARAMS_INVALID,
+            { field: '_id', operator: op },
+          );
+      }
+    }
+  }
+
+  /**
+   * mongo 的 $text 条件 -> ES match 合并字段（esFullText，与 wd 同口径、同分词）
+   * 可出现在任意层级、可有多个，各自按所处的 and / or / not 语境生效，不受 mongo 单条 $text 的限制
+   */
+  protected wdConds(value: any, out: EsCond[]): void {
+    const text = isPlainObj(value) ? value.$search : undefined;
+    if (typeof text !== 'string' || !text.trim()) {
+      throw new CrudError(
+        '"$text" expects { $search: non-empty string }.',
+        CrudErrno.PARAMS_INVALID,
+        { operator: '$text' },
+      );
+    }
+    out.push({ clause: { match: { [this._esOpts.esFullText]: text.trim() } } });
   }
 
   /** 字段所属的 nested path 链（由外到内，内层为全路径），不在 nested 下为空数组 */

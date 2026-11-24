@@ -1,28 +1,30 @@
 // 文档：轻量全文检索组件（MongoDB text 索引 + 分词字段）
-// 不依赖外部搜索引擎，把分词结果落到集合内的 fullText 字段，查询时用相同分词器处理 wd 参数。
+// 不依赖外部搜索引擎，把分词结果落到集合内的全文字段（默认 _text），查询时用相同分词器处理 wd 参数。
 
 import type { Schema, Model } from 'mongoose';
-import type { Segmenter, SearchConf, SearchOpts, JiebaOpts } from './types';
+import type { CsSegmenter, CsSchemaOpts, CsOpts } from './types';
 import type { SearchParams, SearchResult, StatisParams, StatisResult, Context } from '../types';
 import { Cradle, CrudError, CrudErrno } from '../index';
 
 export * from './types';
 
 export class Chaser extends Cradle {
-  private readonly _opts: SearchConf;
+  private readonly _csOpts: CsOpts;
   private readonly _textable: Set<string>;
   private readonly _textableUnselected: Set<string>;
 
   /**
    * 构造期只做 Schema 推导与配置校验，不触达数据库。
-   * - 自动补 fullText 字段（不存在时），其 text 索引由全局 mongoose 插件按 searchOpts 建立
-   * - 自动补打分字段（不存在时）
+   * - csSegmenter 可选，默认 intlSegmenter；text 索引由 csAutoIndex: true 触发全局 mongoose 插件建立，自行建索引则不开启
    * - 收集 textable: true 的 String 字段
+   * - 自动补搜索字段（不存在时）
+   * - 自动补打分字段（不存在时）
    */
   constructor(schema: Schema, model?: Model<any>) {
-    const sopts = (((schema as any).options || {}).searchOpts || {}) as SearchOpts;
-    const fullText = sopts.fullText || 'fullText';
-    const scoreKey = sopts.scoreKey || '_score';
+    const sopts = (((schema as any).options || {}) as CsSchemaOpts);
+    const segmenter = sopts.csSegmenter || intlSegmenter;
+    const fullText = sopts.csFullText || '_text' ;
+    const scoreKey = sopts.csScoreKey || '_score';
 
     const field = schema.path(fullText) as any;
     if (field && field.instance !== 'String') {
@@ -51,11 +53,7 @@ export class Chaser extends Cradle {
 
     super(schema, model);
 
-    this._opts = {
-      fullText,
-      scoreKey,
-      segmenter: sopts.segmenter || defaultSegmenter,
-    };
+    this._csOpts = { segmenter, fullText, scoreKey };
     this._textable = collectTextable(schema, '', new Set<string>(), fullText);
     this._textableUnselected = new Set(
       [...this._textable].filter(f => ((schema.path(f) as any)?.options || {}).select === false),
@@ -72,6 +70,7 @@ export class Chaser extends Cradle {
   /**
    * 拼装全文并分词：默认读取所有 textable: true 字段，扁平化数组、去空后分词。
    * 子类可覆盖以补充码值标签、关联名称等派生文本。
+   * 默认最后调 getFindText 分词以保持一致。
    */
   protected getFullText(doc: any): string {
     const vals: string[] = [];
@@ -89,7 +88,7 @@ export class Chaser extends Cradle {
   /** 查询关键词分词，结果以空格拼接后交给 $text */
   protected getFindText(text: string): string {
     if (!text) return '';
-    return this._opts.segmenter(text)
+    return this._csOpts.segmenter(text)
       .map(t => String(t ?? '').trim())
       .filter(Boolean)
       .join(' ');
@@ -99,7 +98,7 @@ export class Chaser extends Cradle {
 
   /** add：先按入参生成 fullText，再交给 Cradle 落库（create / upsert 新增均走这里） */
   add(data: Record<string, any>): [ any, string ] {
-    const payload = { ...(data || {}), [this._opts.fullText]: this.getFullText(data) };
+    const payload = { ...(data || {}), [this._csOpts.fullText]: this.getFullText(data) };
     return super.add(payload);
   }
 
@@ -112,7 +111,7 @@ export class Chaser extends Cradle {
       const src = this._textableUnselected.size ? await this.loadTextDoc(id) : doc;
       await this.getModel().collection.updateOne(
         { _id: doc._id },
-        { $set: { [this._opts.fullText]: this.getFullText(src) } },
+        { $set: { [this._csOpts.fullText]: this.getFullText(src) } },
       );
       return [ doc, count ];
     })() as unknown as [ any, number ];
@@ -145,7 +144,7 @@ export class Chaser extends Cradle {
       return super.search(rest as SearchParams, ctx);
     }
 
-    const score = this._opts.scoreKey;
+    const score = this._csOpts.scoreKey;
 
     const next: SearchParams = { ...params, wd: text };
     if (! params.sort) next.sort = { [score]: { $meta: 'textScore' } } as any;
@@ -165,7 +164,7 @@ export class Chaser extends Cradle {
     const text = this.getFindText(wd);
     if (! text) {
       const { wd: _omit, ...rest } = params;
-      return super.statis(rest as StatisParams, ctx);
+      return super.statis(rest as StatisParams , ctx);
     }
 
     return super.statis({ ...params, wd: text }, ctx);
@@ -234,8 +233,8 @@ function getDocVal(val: any, name: string): any {
   return val[name];
 }
 
-/** 默认分词器：Intl.Segmenter（word 粒度，过滤非词项并小写） */
-export const defaultSegmenter: Segmenter = (() => {
+/** 默认分词器：Intl.Segmenter（word 粒度，过滤非词项并小写），零依赖 */
+export const intlSegmenter: CsSegmenter = (() => {
   const seg = new (Intl as any).Segmenter(undefined, { granularity: 'word' });
   return (text: string) => [...seg.segment(text)]
     .filter((s: any) => s.isWordLike)
@@ -243,15 +242,14 @@ export const defaultSegmenter: Segmenter = (() => {
 })();
 
 /**
- * 构造 jieba 分词器：需自行安装 @node-rs/jieba（可选 peer 依赖），首次调用时惰性加载，
- * 未安装则抛 INTERNEL_ERROR；分词结果统一小写。
- * mode 缺省为 cut（精确分词），传 'search' 走 cutForSearch（含子词，召回更高，文本也更长）。
+ * 构造 jieba 分词器：需自行安装 @node-rs/jieba，未安装则抛 INTERNEL_ERROR
+ * cfs 是否使用 cutForSearch 方式（含子词，召回更高，结果更长）
+ * hmm 是否开启 hmm 模型（召回更高）
  */
-export function buildJiebaSegmenter(opts: JiebaOpts = {}): Segmenter {
-  const { mode = 'cut', hmm } = opts;
+export function buildJiebaSegmenter(cfs = false, hmm = false): CsSegmenter {
   return (text: string) => {
     const jieba = loadJieba();
-    const words = mode === 'search' ? jieba.cutForSearch(text, hmm) : jieba.cut(text, hmm);
+    const words = cfs ? jieba.cutForSearch(text, hmm) : jieba.cut(text, hmm);
     return words.map((w: string) => String(w).toLowerCase());
   };
 }

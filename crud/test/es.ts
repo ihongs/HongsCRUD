@@ -419,7 +419,9 @@ async function main(): Promise<void> {
   await (cp.add({ name: 'body two', status: 'published', body: 'hello big world' }) as unknown as Promise<[any, string]>);
   await refresh(cp);
   assert('$search 单字段分词命中', await names(cp, { find: { body: { $search: 'hello world' } } }), ['body two']);
-  assert('$search operator and 缺词不命中', await names(cp, { find: { body: { $search: 'hello missing' } } }), [ ]);
+  assert('$search 默认 or 任一命中', await names(cp, { find: { body: { $search: 'hello missing' } } }), ['body two']);
+  assert('$searchLogic all 缺词不命中', await names(cp, { find: { body: { $search: 'hello missing', $searchLogic: 'all' } } }), [ ]);
+  assert('$searchLogic any 任一命中', await names(cp, { find: { body: { $search: 'hello missing', $searchLogic: 'any' } } }), ['body two']);
   assert('$search 非 text 字段抛 PARAMS_INVALID', await errnoOf(() => cp.search({ find: { status: { $search: 'x' } } }, CTX as any)), -32602);
 
   // 有 select:false 可同步字段时 set 降级 syncFind 回查（含 +field 补偿），改后新值可查

@@ -2,7 +2,7 @@
 
 基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `statis / upsert / schema` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
 
-另含可选的轻量检索组件 `Chaser`（从 `hongs-crud/cs` 引入），不依赖外部搜索引擎，把 `textable` 字段分词后存入集合内的 `fullText` 字段，用 MongoDB `$text` 索引做全文检索与打分，见第 4 节。
+另含可选的轻量检索组件 `Chaser`（从 `hongs-crud/cs` 引入），不依赖外部搜索引擎，把 `textable` 字段分词后存入集合内的 `_text` 字段，用 MongoDB `$text` 索引做全文检索与打分，见第 4 节。
 
 另含可选的检索组件 `Chaser`（从 `hongs-crud/es` 引入），把 `search` / `statis` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 5 节。
 
@@ -490,7 +490,7 @@ enum CrudErrno {
 
 ## 4. CS 检索组件（Chaser）
 
-`hongs-crud/cs` 的 `Chaser` 继承 `Cradle`，不依赖外部搜索引擎：写入时把 `textable: true` 字段的分词结果拼进集合内的 `fullText` 字段，查询时用同一分词器处理 `wd`，交给 MongoDB 原生 `$text` 索引检索与打分。适合需要中文分词检索、又不想额外部署 ES 的项目。与 ES 组件类名相同（都叫 `Chaser`），但来自不同 subpath，按需选用。
+`hongs-crud/cs` 的 `Chaser` 继承 `Cradle`，不依赖外部搜索引擎：写入时把 `textable: true` 字段的分词结果拼进集合内的 `_text` 字段，查询时用同一分词器处理 `wd`，交给 MongoDB 原生 `$text` 索引检索与打分。适合需要中文分词检索、又不想额外部署 ES 的项目。与 ES 组件类名相同（都叫 `Chaser`），但来自不同 subpath，按需选用。
 
 ### 4.1 引入与初始化
 
@@ -501,35 +501,37 @@ import { Schema } from 'mongoose';
 import { Chaser } from 'hongs-crud/cs';
 
 const articleSchema = new Schema({
-  title : { type: String, textable: true },   // 分词入 fullText，wd 可搜
+  title : { type: String, textable: true },   // 分词入 _text，wd 可搜
   body  : { type: String, textable: true },
   tags  : { type: [String], textable: true },
   author: { type: String },                    // 不标 textable，不进全文，仍可 find / sort
 }, {
-  collection: 'articles',
-  searchOpts: {},            // 必填：开启搜索，自动为 fullText 建 text 索引
+  collection : 'articles',
+  csAutoIndex: true,   // 由组件自动建 _text 的 text 索引；自行建索引则不要开启
 });
 
 const articleCrud = new Chaser(articleSchema);
 ```
 
-- `searchOpts` 存在时，mongoose 全局插件为 `fullText` 建 `text` 索引，`default_language: 'none'`（不做英文停用词与词干处理，分词交给组件）。
-- 构造时自动补 `fullText`（全文字段，`select: false`）与 `_score`（打分字段，`select: false`）；Schema 已声明同名字段则复用，类型不符抛 `INTERNEL_ERROR`。
-- 同一集合只能有一个 text 索引，与自定义的 `schema.index({ ...: 'text' })` 冲突由使用方自行保证。
+- `csSegmenter` 可选，**默认 `intlSegmenter`**（`Intl.Segmenter`）；可换 `buildJiebaSegmenter(...)` 或任意 `(text) => string[]`。
+- **`csAutoIndex: true` 时自动建索引**：mongoose 全局插件为全文字段（默认 `_text`）建 `text` 索引，`default_language: 'none'`（不做英文停用词与词干处理，分词交给组件）。需要自定义索引（多字段组合、权重等）时不要开启，由使用方自行 `schema.index(...)`。
+- 构造时自动补全文字段（`select: false`）与打分字段（`select: false`）；Schema 已声明同名字段则复用，类型不符抛 `INTERNEL_ERROR`。
+- 同一集合只能有一个 text 索引，`csAutoIndex` 与自定义 text 索引不要同时存在。
 
-Schema 选项（`searchOpts`）：
+Schema 选项（`CsSchemaOpts`）：
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
-| `fullText` | `'fullText'` | 存放分词结果的全文字段名 |
-| `scoreKey` | `'_score'` | 打分字段名，`wd` 检索时并入投影与默认排序 |
-| `segmenter` | `defaultSegmenter` | 分词函数 `(text: string) => string[]`，见 4.4 |
+| `csSegmenter` | `intlSegmenter` | 分词函数 `(text: string) => string[]`，见 4.4 |
+| `csAutoIndex` | `false` | 是否自动建 text 索引；自行创建索引时保持不设 / `false` |
+| `csFullText` | `'_text'` | 存放分词结果的全文字段名 |
+| `csScoreKey` | `'_score'` | 打分字段名，`wd` 检索时并入投影与默认排序 |
 
 ### 4.2 字段扩展项
 
 | 扩展项 | 默认 | 说明 |
 |---|---|---|
-| `textable` | `false` | `String` 字段标 `textable: true` 才分词并入 `fullText`；支持 `[String]` 数组与子文档路径（点号拼接）；`select: false` 的字段同样参与（`set` 后按 id 补查） |
+| `textable` | `false` | `String` 字段标 `textable: true` 才分词并入全文字段（默认 `_text`）；支持 `[String]` 数组与子文档路径（点号拼接）；`select: false` 的字段同样参与（`set` 后按 id 补查） |
 
 未标 `textable` 的字段照常存取、可 `find` / `sort` / `statis`，只是不进全文检索。
 
@@ -537,8 +539,8 @@ Schema 选项（`searchOpts`）：
 
 写入（拆词存储）：
 
-- `add`（`create` / `upsert` 新增都走这里）：`getFullText(doc)` 收集所有 `textable` 字段值（数组展开、去空、`join(' ')`），经分词器切成词串，写入 `fullText` 后交给 `Cradle` 落库。
-- `set`（`update` / `setAll` / `upsert` 更新都走这里）：落库后按合并后的完整文档重算 `fullText`；存在 `select: false` 的 `textable` 字段时按 id 补查一遍再算，避免丢失这些字段的词。
+- `add`（`create` / `upsert` 新增都走这里）：`getFullText(doc)` 收集所有 `textable` 字段值（数组展开、去空、`join(' ')`），经分词器切成词串，写入全文字段（默认 `_text`）后交给 `Cradle` 落库。
+- `set`（`update` / `setAll` / `upsert` 更新都走这里）：落库后按合并后的完整文档重算全文字段；存在 `select: false` 的 `textable` 字段时按 id 补查一遍再算，避免丢失这些字段的词。
 - 默认 `getFullText` 只取文本字段原始值；需要把码值翻译成标签（如 `status: 1` → 「已发布」）、拼入关联名称等派生文本时，覆盖它即可：
 
 ```ts
@@ -571,24 +573,22 @@ await articleCrud.search({ wd: 'mongodb 分词', limit: 20 }, ctx);
 
 | 方式 | 用法 | 说明 |
 |---|---|---|
-| 默认 | 不配置 | `defaultSegmenter`：`Intl.Segmenter` word 粒度，过滤非词项并小写，中英文通用、零依赖 |
+| 默认 | 不配置（或 `csSegmenter: intlSegmenter`） | `intlSegmenter`：`Intl.Segmenter` word 粒度，过滤非词项并小写，中英文通用、零依赖 |
 | jieba | `buildJiebaSegmenter({ mode, hmm })` | 需安装 `@node-rs/jieba`（可选 peer，惰性加载，未装抛 `INTERNEL_ERROR`）；`mode: 'cut'` 精确分词（默认），`'search'` 含子词、召回更高 |
-| 自定义 | 任意函数 | 交给 `searchOpts.segmenter`，可接公司词库、拼音、同义词扩展等 |
+| 自定义 | 任意函数 | 交给 `csSegmenter`，可接公司词库、拼音、同义词扩展等 |
 
 ```ts
 import { Schema } from 'mongoose';
 import { Chaser, buildJiebaSegmenter } from 'hongs-crud/cs';
 
 const articleSchema = new Schema({ /* ... */ }, {
-  collection: 'articles',
-  searchOpts: {
-    segmenter: buildJiebaSegmenter({ mode: 'search' }),
-  },
+  collection : 'articles',
+  csSegmenter: buildJiebaSegmenter({ mode: 'search' }),
 });
 ```
 
-- **换了分词器必须重写存量数据**：`fullText` 里存的是旧分词器切好的词串，换实现或改 `mode` 后旧文档不会自动重算，需全量重写一遍（按业务路径逐条 `set` 即可），否则只有新增与修改过的文档能被新口径检索到。
-- 无需重建索引：`text` 索引只按空格切分 `fullText`，具体分词在应用层完成，换分词器不涉及索引变更（与 ES 组件需 `initIndex()` 重建不同）。
+- **换了分词器必须重写存量数据**：全文字段（默认 `_text`）里存的是旧分词器切好的词串，换实现或改 `mode` 后旧文档不会自动重算，需全量重写一遍（按业务路径逐条 `set` 即可），否则只有新增与修改过的文档能被新口径检索到。
+- 无需重建索引：`text` 索引只按空格切分全文字段，具体分词在应用层完成，换分词器不涉及索引变更（与 ES 组件需 `initIndex()` 重建不同）。
 - 分词器在构造 `Chaser` 时固定，运行期不切换；不同集合需要不同分词器时，各建各的 Schema 与实例即可。
 
 ---
@@ -781,12 +781,13 @@ class UserChaser extends Chaser {
 
 `find` 保持 mongo 风格，内部翻译为 ES DSL，全部进 `filter` 上下文（不参与打分）；支持 `$eq` / `$ne` / `$gt` / `$gte` / `$lt` / `$lte` / `$in` / `$nin` / `$regex` / `$exists` / `$search` 与 `$and` / `$or` / `$not` 与字段等值（含 `null`），不认识的写法抛 `CrudErrno.PARAMS_INVALID`。其余约定：
 
+- **`_id` 与 `$text` 可直接复用 mongo 写法**：`find` 里的 `_id` 翻译为 ES `ids` 查询（等值 / `$eq` / `$in` / `$ne` / `$nin` / `$exists`），`$text: { $search }` 翻译为合并字段（`esFullText`）的 `match`，与 `wd` 同口径。`$text` 可出现在任意层级、可有多个，各自按所在的 `$and` / `$or` / `$not` 语境生效（ES 没有 mongo「一条查询只能一个顶层 `$text`」的限制）；`_id` 与 `$text` 都不会被 `_leaves` 字段校验拦截。
 - **只有 `id` 没有 `wd` / `find` 的请求直查 mongo**（内部走 `rawSearch`）：纯取详情无过滤无打分，ES 帮不上忙还多一趟回表；软删除过滤等语义与 mongo 版完全一致。
 - **返回文档一律来自 mongo**：ES 查询只取 `_id` 与 `_score`，命中 id 回 mongo 取完整文档并按 ES 顺序重排，返回结构与 `Cradle.search` 完全一致；`cols` 交 mongo 处理，沿用 `Cradle` 的投影与 `select: false` 规则。条件、排序、分页、计数一概仍由 ES 完成。
 - `refs` 参数与 mongo 版一致：关联数据由字段级 `reference` 经 `callFunc` 补充（见 3.5），`Cradle` / `Chaser` 行为相同。
 - ES 命中但 mongo 已无（索引滞后 / 已硬删）的 id 直接跳过，不补位。
-- `wd` 非空时追加 `match` 到合并字段参与打分，并把 `_score` 并入结果；`wd` 为空则整个查询不计分。
-- **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 `textable: true` 的 String 可用，ES 侧翻译为 `match`（打 `.text` 子字段；`termsize: 0` 的纯 text 字段打主名），`operator: 'and'` 须全部分词命中；分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 要求 `body` 分词后 `hello` 与 `world` 同时命中；非 textable 字段或空串抛 `PARAMS_INVALID`。
+- `wd` 经 `mixFinds` 转成 mongo 的 `$text` 条件，再与其他条件一起翻译为合并字段（`esFullText`）的 `match`，全部进 `filter` 上下文不计分；不传 `sort` 时按 ES 默认顺序返回，需要稳定顺序请显式传 `sort`。
+- **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 `textable: true` 的 String 可用，ES 侧翻译为 `match`（打 `.text` 子字段；`termsize: 0` 的纯 text 字段打主名），缺省不写 `operator`（沿用 ES `match` 默认的 `or`，任一词命中）；同级可用 `$searchLogic` 调整词间关系：`all` → `and`（须全部分词命中）、`any` → `or`，其他值抛 `PARAMS_INVALID`；`$searchBoost` 透传为 `boost` 加权。分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 命中 `hello` 或 `world` 其一即可，`find: { body: { $search: 'hello world', $searchLogic: 'all', $searchBoost: 2 } }` 则要求两者同时命中并加权；非 textable 字段或空串抛 `PARAMS_INVALID`。
 - 排序、分页（`start` / `limit`）、四种 `mode` 模式与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
 - **扁平模式的限制**：数组子文档未标 `nested: true` 时按 `object` 扁平索引，元素间的关联会丢失，跨字段的联合条件不保证落在同一元素。如 `find: { 'works.tag': 'a', 'works.qty': 9 }` 在扁平模式下会误命中「tag=a 与 qty=9 分属两个元素」的文档；要求同一元素同时满足时给该字段标 `nested: true`。
 - `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`statis` 统计自动内嵌 `reverse_nested` 回到父文档计数。

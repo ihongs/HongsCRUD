@@ -923,7 +923,7 @@ export function mixConds(
 
 export function mixFinds(
   id: undefined | string | string[],
-  wd: undefined | string ,
+  wd: undefined | string | string[],
   ...conds: (Record<string, any> | undefined | null)[]
 ): Record<string, any> {
   const conditions: Record<string, any>[] = [];
@@ -937,9 +937,9 @@ export function mixFinds(
     }
   }
   if (wd) {
-    const ts = wd.trim( );
-    if (ts) {
-      conditions.push({ $text: { $search: ts } });
+    const wds = (Array.isArray(wd) ? wd.join(' ') : wd).trim();
+    if (wds) {
+      conditions.push({ $text: { $search: wds } });
     }
   }
   for (const c of conds) {
@@ -1119,7 +1119,7 @@ function firstOf(v: any): any {
  * 微调 Schema:
  * 1. softDelete: true 简写规范化为 { isDeleted: 'isDeleted', deletedAt: 'deletedAt', deleted: true, default: false }。
  * 2. 补充伪删除标记、伪删除时间字段（已自定义则跳过）。
- * 3. searchOpts 存在时，自动为 fullText 字段建立 text 索引（default_language: 'none'）。
+ * 3. csAutoIndex: true 时（使用 CS 检索且未自行建索引），自动为全文字段建立 text 索引（default_language: 'none'）。
  */
 mongoose.plugin(function(schema: Schema): void {
   /*
@@ -1154,9 +1154,9 @@ mongoose.plugin(function(schema: Schema): void {
     schema.add({ [sdObj.deletedAt || 'deletedAt']: { type: Date   , writable: false, select: false, default: null } });
   }
 
-  // searchOpts: 自动给 fullText 建 text 索引；是否与他人定义的 text 索引冲突，由使用方自行保证
-  const so = (schema as any).get('searchOpts') as { fullText?: string } | undefined;
-  if (so) {
-    schema.index({ [so.fullText || 'fullText']: 'text' } as any, { default_language: 'none' } as any);
+  // cs 检索：仅 csAutoIndex: true 时自动给全文字段建 text 索引；自定义索引则不开启，由使用方自行创建
+  if ((schema as any).get('csAutoIndex') === true) {
+    const csFullText = (schema as any).get('csFullText') as string | undefined;
+    schema.index({ [csFullText || '_text']: 'text' } as any, { default_language: 'none' } as any);
   }
 });

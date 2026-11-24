@@ -1,4 +1,4 @@
-// cs/Chaser 冒烟测试：分词写入 fullText、wd 分词检索、打分排序、statis
+// cs/Chaser 冒烟测试：分词写入 _text、wd 分词检索、打分排序、statis
 // 运行：npm run test:cs
 // 前置：本地 MongoDB 已启动（默认 mongodb://127.0.0.1:27017）
 
@@ -10,7 +10,7 @@ const DB_NAME   = 'test';
 const COLL_NAME = 'testChaserCs';
 const CTX       = { uid: 'tester', roles: ['tester'] };
 
-// fullText / _score 由组件自动补；secret 为 select: false 的 textable 字段
+// _text / _score 由组件自动补；secret 为 select: false 的 textable 字段
 const schema = new mongoose.Schema({
   username: { type: String, textable: true, countable: true },
   name    : { type: String, textable: true },
@@ -18,7 +18,7 @@ const schema = new mongoose.Schema({
   phone   : { type: String, textable: true },
   secret  : { type: String, textable: true, select: false },
   status  : { type: String, countable: true },
-}, { collection: COLL_NAME, searchOpts: {} } as any);
+}, { collection: COLL_NAME, csAutoIndex: true } as any);
 
 const chaser = new Chaser(schema as any);
 const Model  = chaser.getModel();
@@ -81,26 +81,26 @@ async function main(): Promise<void> {
   console.log(`Connected to ${MONGO_URI}/${DB_NAME}`);
   await Model.collection.drop().catch(() => {});
   await Model.createCollection().catch(() => {});
-  await Model.createIndexes();   // 集合被删后重建索引，确保 fullText text 索引存在
+  await Model.createIndexes();   // 集合被删后重建索引，确保 _text text 索引存在
   console.log(`Cleared collection: ${COLL_NAME}\n`);
 
   // ---------- 1) 索引与字段 ----------
   console.log('--- 1) 索引与自动字段 ---');
   const idx = await Model.collection.indexes();
-  assertOk('存在 fullText text 索引', idx.some(i => i.name === 'fullText_text'));
-  assertOk('schema 自动补 fullText 字段', !!schema.path('fullText'));
+  assertOk('存在 _text text 索引', idx.some(i => i.name === '_text_text'));
+  assertOk('schema 自动补 _text 字段', !!schema.path('_text'));
   assertOk('schema 自动补 _score 字段', !!schema.path('_score'));
   assert('参与全文的字段', [...chaser.getTextable()], ['username', 'name', 'email', 'phone', 'secret']);
 
-  // ---------- 2) 写入 fullText ----------
-  console.log('\n--- 2) add 写入 fullText ---');
+  // ---------- 2) 写入 _text ----------
+  console.log('\n--- 2) add 写入 _text ---');
   const d1 = await add({ username: 'b', name: '管理员', email: 'abc@def.cn', phone: '13800138000', secret: '机密内容', status: 'on' });
   const d2 = await add({ username: 'a', name: '张三丰', status: 'on' });
   const d3 = await add({ username: 'z', name: '测试', status: 'off' });
   const d4 = await add({ username: '测试', name: '测试', status: 'off' });
   const raw1 = await Model.collection.findOne({ _id: d1._id });
-  assert('fullText 落库（含 select:false 的 secret）',
-    raw1!.fullText, 'b 管理 员 abc def.cn 13800138000 机密 内容');
+  assert('_text 落库（含 select:false 的 secret）',
+    raw1!._text, 'b 管理 员 abc def.cn 13800138000 机密 内容');
 
   // ---------- 3) wd 分词检索 ----------
   console.log('\n--- 3) wd 分词检索 ---');
@@ -121,14 +121,14 @@ async function main(): Promise<void> {
   const white = (await search({ wd: '测试', cols: { username: 1 } })).list;
   assert('cols 白名单附带 _score', Object.keys(white[0].toObject()), ['_id', 'username', '_score']);
 
-  // ---------- 5) set 重算 fullText ----------
-  console.log('\n--- 5) set 重算 fullText ---');
+  // ---------- 5) set 重算 _text ----------
+  console.log('\n--- 5) set 重算 _text ---');
   await (chaser.set(String(d1._id), { name: '李四' }) as unknown as Promise<[ any, number ]>);
   assert('旧词 管理 不再命中', names((await search({ wd: '管理' })).list), []);
   assert('新词 李四 命中', names((await search({ wd: '李四' })).list), ['李四/b']);
   assert('secret 内容保留', names((await search({ wd: '机密' })).list), ['李四/b']);
   const raw1b = await Model.collection.findOne({ _id: d1._id });
-  assert('fullText 已更新', raw1b!.fullText, 'b 李 四 abc def.cn 13800138000 机密 内容');
+  assert('_text 已更新', raw1b!._text, 'b 李 四 abc def.cn 13800138000 机密 内容');
 
   // ---------- 6) statis 同样处理 wd ----------
   console.log('\n--- 6) statis ---');

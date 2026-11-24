@@ -9,8 +9,8 @@ export * from './types';
 /** 本地上传存储目录（相对运行目录），默认 ./static/upload（由 api/static.ts 的静态服务对外提供） */
 export const UPLOAD_DIR = process.env.UPLOAD_DIR || './static/upload';
 
-/** 上传临时文件目录（相对运行目录），默认 ./server/tmp。请求体流式写盘，不整体读入内存 */
-export const UPLOAD_TMP = resolve(process.env.UPLOAD_TMP || './server/tmp');
+/** 上传临时文件目录（相对运行目录），默认 ./system/tmp。请求体流式写盘，不整体读入内存 */
+export const UPLOAD_TMP = resolve(process.env.UPLOAD_TMP || './system/tmp');
 
 /* ---------- 驱动 ---------- */
 
