@@ -1,12 +1,12 @@
 # hongs-crud
 
-基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `statis / upsert / schema` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
+基于 Mongoose Schema 的 CRUD 封装，提供 `search / create / update / delete` 四个标准方法，以及 `schema / statis / upsert` 三个扩展方法，通过 schema 可返回 JSON Schema 规范的结构，以便前端和 AI 识别处理。
 
 另含可选的轻量检索组件 `Chaser`（从 `hongs-crud/cs` 引入），不依赖外部搜索引擎，把 `textable` 字段分词后存入集合内的 `_text` 字段，用 MongoDB `$text` 索引做全文检索与打分，见第 4 节。
 
-另含可选的检索组件 `Chaser`（从 `hongs-crud/es` 引入），把 `search` / `statis` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 5 节。
+另含可选的文本检索组件 `Chaser`（从 `hongs-crud/es` 引入），把 `search` / `statis` 的查询执行搬到 ElasticSearch，采用与 MongoDB 一致的查询语法，提供更强的搜索及筛选能力，并在写入后自动同步索引，见第 5 节。
 
-另含可选的键值组件 `Roster`（接口在 `hongs-crud/kv`，实现在 `hongs-crud/kv/mongo` 与 `hongs-crud/kv/redis`），基于 MongoDB 或 Redis 存取带有效期的键值记录，适合验证码、上传令牌等短命数据，见第 6 节。
+另含可选的键值读写组件 `Roster`（接口在 `hongs-crud/kv`，实现在 `hongs-crud/kv/mongo` 与 `hongs-crud/kv/redis`），基于 MongoDB 或 Redis 存取带有效期的键值记录，适合验证码、上传令牌等短命数据，见第 6 节。
 
 源码：[github.com/ihongs/HongsCRUD](https://github.com/ihongs/HongsCRUD/tree/main/crud)
 
@@ -966,14 +966,17 @@ await userCrud.syncFind();
 import kv from 'hongs-crud/kv';
 
 await kv.set('token:abc', { uid: 1 }, 300);       // 300 秒后失效
+await kv.add('nonce:xyz', 1, 300);                // key 不存在或已过期时写入 → true；已存在且未过期 → false
 await kv.get('token:abc');                        // → { uid: 1 }
 await kv.getAll('token:abc');                     // → { key, value, expiresAt, createdAt, updatedAt }
 ```
 
+`add` 用于一次性占用：判断与写入原子完成，并发同 key 只有一个调用返回 true，适合幂等提交、验证码只发一次、nonce 防重放；已存在的记录不覆盖，已过期的记录视同不存在、可重新占用。
+
 | 方法 | 说明 |
 |---|---|
 | `set(key, value, expires)` | 写入并覆盖同 key 记录；`expires` 为 `Date` 表示到期时间，为 `number` 表示多少秒后失效 |
-| `add(key, value, expires)` | 仅当 key 不存在时写入，返回是否写入成功；原子操作，用于一次性标记/防重放 |
+| `add(key, value, expires)` | 仅当 key 不存在（或已过期）时写入，返回是否写入成功；原子操作，用于一次性标记/防重放 |
 | `get(key)` | 取值，过期或不存在返回 `null` |
 | `getAll(key)` | 取完整记录 `{ key, value, expiresAt, createdAt, updatedAt }` |
 | `getAndDel(key)` | 取值并删除，过期或不存在返回 `null` |
