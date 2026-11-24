@@ -608,6 +608,68 @@ export class Chaser extends Cradle {
     conds.push({ clause: { match: { [this._esOpts.esFullText]: text.trim() } }, score: true, scoreAll: true });
   }
 
+  /* ---------- 排序与取回 ---------- */
+
+  /**
+   * sort -> ES sort 数组：打 keyword 主视角（即本名，见 termName），nested 字段补 nested 与 mode（升 min / 降 max），见 1.3
+   * params 透传以便按参数动态排序（如坐标最近距离）
+   * protected 供子类接入（见 README 4.4）
+   */
+  protected getSort(sort: SortSpec, params: SearchParams): Record<string, any>[] {
+    const out: Record<string, any>[] = [];
+    for (const [name, dir] of Object.entries(sort)) {
+      const leaf = this._leaves.get(name);
+      if (!leaf) {
+        throw new CrudError(
+          `Sort field "${name}" is not in the ES index (syncable: false or unmappable type).`,
+          CrudErrno.PARAMS_INVALID,
+          { name },
+        );
+      }
+      const chain = this.nestedChain(name);
+      out.push({ [termName(leaf)]: {
+        order: dir === -1 ? 'desc' : 'asc',
+        // nested 数组元素各自有值，聚合后参与排序：升序取最小、降序取最大；path 用最内层
+        ...(chain.length ? {
+          mode  : dir === -1 ? 'max' : 'min',
+          nested: { path: chain[chain.length - 1] },
+        } : {}),
+      } });
+    }
+    return out;
+  }
+
+  /**
+   * 按命中顺序回 mongo 取文档（见 2.2）：$in 查回（带软删条件）后按 ES 顺序重排，
+   * 已不在 mongo 的 id（索引滞后 / 已硬删）直接跳过不补位
+   */
+  protected async getDocs(hits: any[], cols?: ColsSpec, withScore?: boolean): Promise<any[]> {
+    if (!hits.length) return [];
+
+    // 字符串 _id 靠 mongoose 查询自动 cast（search 入口运行时不引 mongoose，见 2 节）
+    const cond: Record<string, any> = {
+      _id: { $in: hits.map(h => h._id) },
+      ...this.getSoftDeleteCond(),
+    };
+    const find = this.getModel().find(cond);
+    if  ( cols ) find.select( cols as any );
+
+    const docs = await find.exec();
+    const byId = new Map(docs.map(d => [String(d._id), d] as [string, any]));
+    const out : any[] = [];
+    for (const h of hits) {
+      const doc = byId.get(String(h._id));
+      if (! doc) continue;
+      // scoring 时把 _score 并入结果：strict 下 Document 普通属性赋值不进 toJSON，须写内部存储；
+      // 显式 sort 且未开 scoring 时 ES 返回 _score: null，跳过即可
+      if (withScore && typeof h._score === 'number') (doc as any)._doc._score = h._score;
+      out.push(doc);
+    }
+    return out;
+  }
+
+  /* ---------- 覆盖：读走 ES（见 3 / 4 节） ---------- */
+
   /** 直查 mongo：透传 Cradle.search 原实现，绕过 ES，供兜底或与索引比对用 */
   rawSearch(params: SearchParams, ctx: Context): SearchResult {
     return super.search(params, ctx);
@@ -617,8 +679,6 @@ export class Chaser extends Cradle {
   rawStatis(params: StatisParams, ctx: Context): StatisResult {
     return super.statis(params, ctx);
   }
-
-  /* ---------- 覆盖：读走 ES（见 3 / 4 节） ---------- */
 
   /**
    * 检索入口：条件 / 排序 / 分页 / 计数一概由 ES 完成，_source: false 只取 _id 与 _score，
@@ -678,10 +738,10 @@ export class Chaser extends Cradle {
     if (scoreOpen) {
       // 有 sort 时 _score 作为第一排序键；sort 里显式写 _score 时取其方向（默认倒序）
       const { _score: dir, ...rest } = (sort || {}) as Record<string, any>;
-      const restSort = Object.keys(rest).length ? this.getSort(rest) : [];
+      const restSort = Object.keys(rest).length ? this.getSort(rest, params) : [];
       body.sort = [{ _score: { order: dir === 1 ? 'asc' : 'desc' } }, ...restSort];
     } else if (sort) {
-      body.sort = this.getSort(sort);
+      body.sort = this.getSort(sort, params);
     }
     // list-more 无需总数；totalHits 未传时走 ES 默认估算，true / 数字原样透传（见 3 节表格）
     if (mode === 'list-more') {
@@ -723,60 +783,6 @@ export class Chaser extends Cradle {
     const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
     if (refsData) result.refs = refsData;
     return result;
-  }
-
-  /**
-   * 按命中顺序回 mongo 取文档（见 2.2）：$in 查回（带软删条件）后按 ES 顺序重排，
-   * 已不在 mongo 的 id（索引滞后 / 已硬删）直接跳过不补位
-   */
-  protected async getDocs(hits: any[], cols?: ColsSpec, withScore?: boolean): Promise<any[]> {
-    if (!hits.length) return [];
-
-    // 字符串 _id 靠 mongoose 查询自动 cast（search 入口运行时不引 mongoose，见 2 节）
-    const cond: Record<string, any> = {
-      _id: { $in: hits.map(h => h._id) },
-      ...this.getSoftDeleteCond(),
-    };
-    const find = this.getModel().find(cond);
-    if  ( cols ) find.select( cols as any );
-
-    const docs = await find.exec();
-    const byId = new Map(docs.map(d => [String(d._id), d] as [string, any]));
-    const out : any[] = [];
-    for (const h of hits) {
-      const doc = byId.get(String(h._id));
-      if (! doc) continue;
-      // scoring 时把 _score 并入结果：strict 下 Document 普通属性赋值不进 toJSON，须写内部存储；
-      // 显式 sort 且未开 scoring 时 ES 返回 _score: null，跳过即可
-      if (withScore && typeof h._score === 'number') (doc as any)._doc._score = h._score;
-      out.push(doc);
-    }
-    return out;
-  }
-
-  /** sort -> ES sort 数组：打 keyword 主视角（即本名，见 termName），nested 字段补 nested 与 mode（升 min / 降 max），见 1.3；protected 供子类接入脚本排序（见 README 4.4） */
-  protected getSort(sort: SortSpec): Record<string, any>[] {
-    const out: Record<string, any>[] = [];
-    for (const [field, dir] of Object.entries(sort)) {
-      const leaf = this._leaves.get(field);
-      if (!leaf) {
-        throw new CrudError(
-          `Sort field "${field}" is not in the ES index (syncable: false or unmappable type).`,
-          CrudErrno.PARAMS_INVALID,
-          { field },
-        );
-      }
-      const chain = this.nestedChain(field);
-      out.push({ [termName(leaf)]: {
-        order: dir === -1 ? 'desc' : 'asc',
-        // nested 数组元素各自有值，聚合后参与排序：升序取最小、降序取最大；path 用最内层
-        ...(chain.length ? {
-          mode  : dir === -1 ? 'max' : 'min',
-          nested: { path: chain[chain.length - 1] },
-        } : {}),
-      } });
-    }
-    return out;
   }
 
   /**

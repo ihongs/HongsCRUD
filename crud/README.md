@@ -836,7 +836,7 @@ class MyChaser extends Chaser {
 
 ```ts
 class MyChaser extends Chaser {
-  protected getSort(sort: Record<string, 1 | -1>): Record<string, any>[] {
+  protected getSort(sort: Record<string, 1 | -1>, params: SearchParams): Record<string, any>[] {
     const out: Record<string, any>[] = [];
     for (const [field, dir] of Object.entries(sort)) {  // 按传入顺序落位，虚拟字段在中间就落中间
       if (field === 'vFieldx') {
@@ -851,7 +851,7 @@ class MyChaser extends Chaser {
           missing: '_last',
         } });
       } else {
-        out.push(...super.getSort({ [field]: dir }));    // 逐字段复用原翻译与校验
+        out.push(...super.getSort({ [field]: dir }, params));   // 逐字段复用原翻译与校验
       }
     }
     if (out.length) out.push({ _doc: 'asc' });           // 并列兜底，保证分页翻页稳定
@@ -861,6 +861,7 @@ class MyChaser extends Chaser {
 ```
 
 - 调用侧无感：`search({ sort: { vFieldx: -1 } })`，可与真实字段混用，优先级即传入顺序。
+- `params` 是本次 `search` 的原始入参（含扩展字段），可用于按参数动态排序：`sort` 里的方向只是占位，实际取值从 `params` 读。如 `search({ sort: { loc: 1 }, loc: [116.4, 39.9] })` 可在重写里改为 `{ _geo_distance: { loc: params.loc, order: dir === -1 ? 'desc' : 'asc' } }`，升序即最近优先（字段须以 `geo_point` 入 mapping）。
 - 脚本引用的字段必须已入索引（`syncable` 非 false 且有 doc values）；虚拟字段名被剥离，不参与 `_leaves` 校验。
 - `_script` 逐文档计算、无法利用索引序，数据量大时建议物化：重写 `esDoc()` 算好加权值存成真实字段（mapping 同步声明），`getSort` 走普通排序。传了 `sort` 即不再按 `_score` 排，但 `_score` 仍并入返回文档。
 
