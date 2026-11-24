@@ -786,8 +786,14 @@ class UserChaser extends Chaser {
 - **返回文档一律来自 mongo**：ES 查询只取 `_id` 与 `_score`，命中 id 回 mongo 取完整文档并按 ES 顺序重排，返回结构与 `Cradle.search` 完全一致；`cols` 交 mongo 处理，沿用 `Cradle` 的投影与 `select: false` 规则。条件、排序、分页、计数一概仍由 ES 完成。
 - `refs` 参数与 mongo 版一致：关联数据由字段级 `reference` 经 `callFunc` 补充（见 3.5），`Cradle` / `Chaser` 行为相同。
 - ES 命中但 mongo 已无（索引滞后 / 已硬删）的 id 直接跳过，不补位。
-- `wd` 经 `mixFinds` 转成 mongo 的 `$text` 条件，再与其他条件一起翻译为合并字段（`esFullText`）的 `match`，全部进 `filter` 上下文不计分；不传 `sort` 时按 ES 默认顺序返回，需要稳定顺序请显式传 `sort`。
-- **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 `textable: true` 的 String 可用，ES 侧翻译为 `match`（打 `.text` 子字段；`termsize: 0` 的纯 text 字段打主名），缺省不写 `operator`（沿用 ES `match` 默认的 `or`，任一词命中）；同级可用 `$searchLogic` 调整词间关系：`all` → `and`（须全部分词命中）、`any` → `or`，其他值抛 `PARAMS_INVALID`；`$searchBoost` 透传为 `boost` 加权。分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 命中 `hello` 或 `world` 其一即可，`find: { body: { $search: 'hello world', $searchLogic: 'all', $searchBoost: 2 } }` 则要求两者同时命中并加权；非 textable 字段或空串抛 `PARAMS_INVALID`。
+- `wd` 经 `mixFinds` 转成 mongo 的 `$text` 条件，再与其他条件一起翻译为合并字段（`esFullText`）的 `match`；默认进 `filter` 上下文不计分，`mods` 含 `'score'` / `'score-all'` 时进 `must` 参与打分（见下）。
+- **`mods`（ES 独有）**：开放标志位数组，当前支持打分相关两项——
+  - `'score'`：文本相关度打分，`wd` / `$text` / `$search` 的 `match` 进 `must`，其余条件仍在 `filter`；不要求有 `wd`。
+  - `'score-all'`：在 `'score'` 基础上，等值 / `$eq` / `$in` / `_id` 等正条件也参与打分（`$ne` / `$nin` / `null` / `range` / `$exists` / `$regex` 仍留 `filter`）。
+  - 两者同时出现时 `'score-all'` 优先；未知标志忽略，便于以后扩展。
+  - 启用后默认按 `_score` 倒序；若同时传 `sort`，`_score` 为**第一排序键**（`sort` 里写 `_score: 1` 可改为升序），其后才按其他字段；结果文档附带 `_score` 数值（不受 `cols` 限制）。
+  - 不传任何打分标志时全部条件进 `filter`、不计分、也不返回 `_score`；仅 `Chaser.search` 读取，`Cradle` / `statis` 忽略。
+- **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 `textable: true` 的 String 可用，ES 侧翻译为 `match`（打 `.text` 子字段；`termsize: 0` 的纯 text 字段打主名），缺省不写 `operator`（沿用 ES `match` 默认的 `or`，任一词命中）；同级可用 `$searchLogic` 调整词间关系：`all` → `and`（须全部分词命中）、`any` → `or`，其他值抛 `PARAMS_INVALID`；`$searchBoost` 透传为 `boost` 加权（需配合 `mods` 的 `'score'` / `'score-all'` 才影响排序）。分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 命中 `hello` 或 `world` 其一即可，`find: { body: { $search: 'hello world', $searchLogic: 'all', $searchBoost: 2 } }` 则要求两者同时命中并加权；非 textable 字段或空串抛 `PARAMS_INVALID`。
 - 排序、分页（`start` / `limit`）、四种 `mode` 模式与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
 - **扁平模式的限制**：数组子文档未标 `nested: true` 时按 `object` 扁平索引，元素间的关联会丢失，跨字段的联合条件不保证落在同一元素。如 `find: { 'works.tag': 'a', 'works.qty': 9 }` 在扁平模式下会误命中「tag=a 与 qty=9 分属两个元素」的文档；要求同一元素同时满足时给该字段标 `nested: true`。
 - `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`statis` 统计自动内嵌 `reverse_nested` 回到父文档计数。

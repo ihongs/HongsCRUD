@@ -80,6 +80,8 @@ export interface EsLeaf {
 
 /** 翻译的中间态：完整 ES 子句；叶子字段条件另带所属 nested path 链，供 and 语境归组 */
 export interface EsCond {
-  clause: Record<string, any>;
-  chain?: string[];
+  clause   : Record<string, any>;
+  chain?   : string[];
+  score?   : boolean;  // 参与 'score' 模式（文本相关度）
+  scoreAll?: boolean;  // 参与 'score-all' 模式（文本 + 正条件）
 }

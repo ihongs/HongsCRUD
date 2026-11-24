@@ -34,6 +34,9 @@ export function getEsClient(): Client | undefined {
 /** terms 聚合 size 上限约定值（ES search.max_buckets 默认），tops 为 0（不限）时取它，见 4 节 */
 const TERMS_MAX = 65536;
 
+/** 打分模式：0 不打分 / 1 文本相关度 / 2 尽可能多条件参与打分（见 mods） */
+type ScoreMode = 0 | 1 | 2;
+
 export class Chaser extends Cradle {
   private readonly _es?    : Client;
   private readonly _esOpts : EsOpts;
@@ -232,25 +235,57 @@ export class Chaser extends Cradle {
 
   /**
    * 把 find / id / wd 翻译为 ES query DSL（对照表见 2.1），供 search / statis 共用
-   * 先按 mongo 口径经 mixFinds 合成查询结构（id -> _id，wd -> $text，find 原样），
-   * 再整体交给 collectAnd 翻译；全部条件进 filter 上下文，无任何条件时退化为 match_all
+   * 先按 mongo 口径经 mixFinds 合成查询结构（id -> _id，wd -> $text，find 原样），再交给 collectAnd 翻译；
+   * mode 为 0 时全部进 filter；1 / 2 时按子句上的 score / scoreAll 标记拆入 must
    */
-  getQuery(find?: FindSpec, id?: string | string[], wd?: string): Record<string, any> {
+  getQuery(find?: FindSpec, id?: string | string[], wd?: string, mode: ScoreMode = 0): Record<string, any> {
     const spec = mixFinds(id, wd, find);
     if (!Object.keys(spec).length) return { match_all: {} };
 
     const conds: EsCond[] = [];
-    this.collectAnd([spec], conds);
+    this.collectAnd(conds, [spec], mode);
+    return this. wrapQuery (conds, mode);
+  }
 
-    const filter = emitAnd (conds);
-    return filter.length ? { bool: { filter } } : { match_all: {} };
+  /**
+   * 条件合成完整查询：
+   * mode：0 全部进 filter；1 认 score 进 must；2 认 score 或 scoreAll 进 must；
+   * 同一 nested path 整组归类（组内任一命中则整组进 must）；其余进 filter。
+   */
+  protected wrapQuery(conds: EsCond[], mode: ScoreMode): Record<string, any> {
+    if (mode === 0) {
+      const filter = emitAnd(conds);
+      return filter.length ? { bool: { filter } } : { match_all: {} };
+    }
+
+    const picked = (c: EsCond): boolean => mode === 2 ? !!c.scoreAll : !!c.score;
+
+    const scoredChains = new Set<string>();
+    for (const c of conds) {
+      if (picked(c) && c.chain?.length) scoredChains.add(c.chain.join('\u0000'));
+    }
+
+    const scoreConds: EsCond[] = [];
+    const plainConds: EsCond[] = [];
+    for (const c of conds) {
+      const k = c.chain?.length ? c.chain.join('\u0000') : '';
+      if (picked(c) || (k && scoredChains.has(k))) scoreConds.push(c);
+      else plainConds.push(c);
+    }
+
+    const bool : Record<string, any> = {};
+    const must = emitAnd(scoreConds);
+    if (must.length) bool.must   = must;
+    const filt = emitAnd(plainConds);
+    if (filt.length) bool.filter = filt;
+    return Object.keys(bool).length ? { bool } : { match_all: {} };
   }
 
   /**
    * 收集 and 语境的条件：对象多键为隐式 and，$and 各元素并入同一语境（同 nested path 才可归组，见 1.3）
-   * $or / $not 的产物为完整子句，各分支独立包裹、不跨分支归组
+   * $or / $not 的产物为完整子句，各分支独立包裹、不跨分支归组；mode 只决定 $or 分支的 must/filter 结构
    */
-  protected collectAnd(specs: Record<string, any>[], out: EsCond[]): void {
+  protected collectAnd(conds: EsCond[], specs: Record<string, any>[], mode: ScoreMode = 0): void {
     for (const spec of specs) {
       for (const [key, val] of Object.entries(spec)) {
         if (key === '$and') {
@@ -261,10 +296,10 @@ export class Chaser extends Cradle {
               { operator: key },
             );
           }
-          this.collectAnd(val, out);
+          this.collectAnd(conds, val, mode);
           continue;
         }
-        if (key === '$or') {
+        if (key === '$or' ) {
           if (!Array.isArray(val) || !val.every(isPlainObj)) {
             throw new CrudError(
               `"${key}" expects an array of condition objects.`,
@@ -272,8 +307,17 @@ export class Chaser extends Cradle {
               { operator: key },
             );
           }
-          const clauses = val.map(b => ({ bool: { filter: emitAnd(this.collectOne(b)) } }));
-          out.push({ clause: { bool: { should: clauses, minimum_should_match: 1 } } });
+          const parts    = val.map (b => this.collectOne(b, mode));
+          const score    = parts.some(cs => cs.some(c => c.score));
+          const scoreAll = parts.some(cs => cs.some(c => c.scoreAll));
+          conds.push({
+            clause: { bool: {
+              should: parts.map(cs => this.wrapQuery(cs, mode)),
+              minimum_should_match: 1,
+            } },
+            ...(score    ? { score    : true } : {}),
+            ...(scoreAll ? { scoreAll : true } : {}),
+          });
           continue;
         }
         if (key === '$not') {
@@ -286,28 +330,28 @@ export class Chaser extends Cradle {
           }
           const clauses = emitAnd(this.collectOne(val));
           // 多子句须先合成整体再取非：NOT(A AND B) 不等于 NOT A AND NOT B
-          out.push({ clause: clauses.length === 1
+          conds.push({ clause: clauses.length === 1
             ? { bool: { must_not: [clauses[0]] } }
             : { bool: { must_not: [{ bool: { filter: clauses } }] } } });
           continue;
         }
         if (key === '$text') {
-          this.wdConds(val, out);
+          this.wdConds (conds, val);
           continue;
         }
         if (key === '_id') {
-          this.idConds(val, out);
+          this.idConds (conds, val);
           continue;
         }
-        this.fieldConds(key, val, out);
+        this.fieldConds(conds, key, val);
       }
     }
   }
 
   /** 翻译单个 find 对象（自身为独立 and 语境）的条件，返回带 nested 链的中间态 */
-  protected collectOne(spec: Record<string, any>): EsCond[] {
+  protected collectOne(spec: Record<string, any>, mode: ScoreMode = 0): EsCond[] {
     const conds: EsCond[] = [];
-    this.collectAnd([spec], conds);
+    this.collectAnd(conds, [spec], mode);
     return conds;
   }
 
@@ -316,7 +360,7 @@ export class Chaser extends Cradle {
    * 自定义的字段条件可覆盖重写此方法
    * 未入索引的字段与不支持的操作符抛 PARAMS_INVALID
    */
-  protected fieldConds(field: string, value: any, out: EsCond[]): void {
+  protected fieldConds(conds: EsCond[], field: string, value: any): void {
     const leaf = this._leaves.get(field);
     if (! leaf) {
       throw new CrudError(
@@ -343,7 +387,13 @@ export class Chaser extends Cradle {
     }
 
     const chain = this.nestedChain(field);
-    const push  = (clause: Record<string, any>): void => { out.push({ clause, chain }); };
+    const push  = (clause: Record<string, any>, score = false, scoreAll = false): void => {
+      conds.push({
+        clause, chain,
+        ...(score    ? { score    : true } : {}),
+        ...(scoreAll ? { scoreAll : true } : {}),
+      });
+    };
 
     // null 与缺失在 ES 里同义（exists 均为假），must_not + exists
     if (value === null || value === undefined) {
@@ -352,7 +402,7 @@ export class Chaser extends Cradle {
     }
 
     if (value instanceof Date || typeof value !== 'object') {
-      push({ term: { [termName(leaf)]: value } });
+      push({ term: { [termName(leaf)]: value } }, false, true);
       return;
     }
 
@@ -368,9 +418,8 @@ export class Chaser extends Cradle {
           break;
         case '$eq':
           // mongo 语义：$eq null 即「字段无值」
-          push(ov === null || ov === undefined
-            ? { bool: { must_not: [{ exists: { field } }] } }
-            : { term: { [termName(leaf)]: ov } });
+          if (ov === null || ov === undefined) push({ bool: { must_not: [{ exists: { field } }] } });
+          else push({ term: { [termName(leaf)]: ov } }, false, true);
           break;
         case '$ne':
           // mongo 语义：$ne null 即「字段有值」
@@ -386,7 +435,7 @@ export class Chaser extends Cradle {
               { field, operator: op },
             );
           }
-          push({ terms: { [termName(leaf)]: ov } });
+          push({ terms: { [termName(leaf)]: ov } }, false, true);
           break;
         }
         case '$nin': {
@@ -434,7 +483,7 @@ export class Chaser extends Cradle {
           }
           const match = { query: ov, operator: logic === 'all' ? 'and' : 'or' } as any;
           if (boost !== undefined) match.boost = boost;
-          push({ match: { [textName(leaf)]: match } });
+          push({ match: { [textName(leaf)]: match } }, true, true);
           break;
         }
         case '$searchBoost':
@@ -456,9 +505,9 @@ export class Chaser extends Cradle {
    * 支持等值 / $eq / $in / $ne / $nin / $exists，其余操作符抛 PARAMS_INVALID
    * （_id 是 ES 元数据，不在 mapping 的 _leaves 里，走不了 fieldConds）
    */
-  protected idConds(value: any, out: EsCond[]): void {
-    const push = (clause: Record<string, any>): void => {
-      out.push({ clause });
+  protected idConds(conds: EsCond[], value: any): void {
+    const push = (clause: Record<string, any>, scoreAll = false): void => {
+      conds.push({ clause, ...(scoreAll ? { scoreAll: true } : {}) });
     };
     const ids  = (vals: any[]): Record<string, any> => ({
       ids: { values: vals.filter(v => v !== null && v !== undefined).map(String) },
@@ -486,21 +535,19 @@ export class Chaser extends Cradle {
     }
 
     if (value instanceof Date || typeof value !== 'object') {
-      push(ids([value]));         // ObjectId / 字符串 / 数字等直接当等值；日期将错就错，与 fieldConds 一致
+      push(ids([value]), true);   // ObjectId / 字符串 / 数字等直接当等值；日期将错就错，与 fieldConds 一致
       return;
     }
 
     for (const [op, ov] of Object.entries(value)) {
       switch (op) {
         case '$eq':
-          push(ov === null || ov === undefined
-            ? { match_none: {} }
-            : ids([ov]));
+          if (ov === null || ov === undefined) push({ match_none: {} });
+          else push(ids([ov]), true);
           break;
         case '$ne':
-          push(ov === null || ov === undefined
-            ? { match_all: {} }
-            : { bool: { must_not: [ids([ov])] } });
+          if (ov === null || ov === undefined) push({ match_all : {} });
+          else push({ bool: { must_not: [ids([ov])] } });
           break;
         case '$in':
           if (!Array.isArray(ov)) {
@@ -510,7 +557,7 @@ export class Chaser extends Cradle {
               { field: '_id', operator: op },
             );
           }
-          push(ids(ov));
+          push(ids(ov), true);
           break;
         case '$nin':
           if (!Array.isArray(ov)) {
@@ -539,7 +586,7 @@ export class Chaser extends Cradle {
    * mongo 的 $text 条件 -> ES match 合并字段（esFullText，与 wd 同口径、同分词）
    * 可出现在任意层级、可有多个，各自按所处的 and / or / not 语境生效，不受 mongo 单条 $text 的限制
    */
-  protected wdConds(value: any, out: EsCond[]): void {
+  protected wdConds(conds: EsCond[], value: any): void {
     const text = isPlainObj(value) ? value.$search : undefined;
     if (typeof text !== 'string' || !text.trim()) {
       throw new CrudError(
@@ -548,7 +595,7 @@ export class Chaser extends Cradle {
         { operator: '$text' },
       );
     }
-    out.push({ clause: { match: { [this._esOpts.esFullText]: text.trim() } } });
+    conds.push({ clause: { match: { [this._esOpts.esFullText]: text.trim() } }, score: true, scoreAll: true });
   }
 
   /** 字段所属的 nested path 链（由外到内，内层为全路径），不在 nested 下为空数组 */
@@ -577,7 +624,9 @@ export class Chaser extends Cradle {
   /**
    * 检索入口：条件 / 排序 / 分页 / 计数一概由 ES 完成，_source: false 只取 _id 与 _score，
    * 命中 id 一律回 mongo 取完整文档并按 ES 顺序重排（见 2.2），cols 交 mongo 投影；
-   * 不传 sort 且有 wd 时按 _score 降序，即 ES 默认行为，无需显式处理；
+   * mods 含 'score'（文本相关度）或 'score-all'（尽可能多条件）时启用打分：打分子句进 must，
+   * 默认按 _score 倒序，传了 sort 则 _score 为第一排序键，结果回填 _score；
+   * 不含相关 mods 时全部条件进 filter、不计分；
    * 只有 id 没有 wd / find 时是纯取详情，无过滤无打分，分流 rawSearch 直查 mongo
    */
   async search(params: SearchParams, ctx: Context): Promise<SearchResult> {
@@ -590,7 +639,12 @@ export class Chaser extends Cradle {
 
     await this.makeIndex();
 
-    const query = this.getQuery(find, id, wd);
+    const mods = Array.isArray(params.mods) ? params.mods : [];
+    const scoreMode: ScoreMode = mods.includes('score-all') ? 2
+                               : mods.includes('score')     ? 1
+                               : 0;
+    const scoring = scoreMode !== 0;
+    const query   = this.getQuery(find, id, wd, scoreMode);
 
     // 0 不限（limitMax = 0 时），默认 limitDef，受 limitMax 约束：语义与报错沿用 Cradle.search
     const opts  = (this.getSchema() as any).options || {};
@@ -622,7 +676,14 @@ export class Chaser extends Cradle {
       size : mode === 'list-more' ? size + 1 : size,   // 多取一条判断 more
       _source: false,
     };
-    if (sort) body.sort = this.getSort(sort);
+    if (scoring) {
+      // 有 sort 时 _score 作为第一排序键；sort 里显式写 _score 时取其方向（默认倒序）
+      const { _score: dir, ...rest } = (sort || {}) as Record<string, any>;
+      const restSort = Object.keys(rest).length ? this.getSort(rest) : [];
+      body.sort = [{ _score: { order: dir === 1 ? 'asc' : 'desc' } }, ...restSort];
+    } else if (sort) {
+      body.sort = this.getSort(sort);
+    }
     // list-more 无需总数；totalHits 未传时走 ES 默认估算，true / 数字原样透传（见 3 节表格）
     if (mode === 'list-more') {
       body.track_total_hits = false;
@@ -639,7 +700,7 @@ export class Chaser extends Cradle {
       return { total: tot?.value ?? 0, totalRel: tot?.relation };
     }
     if (mode === 'only-list') {
-      const list = await this.getDocs(hits, cols, !!wd?.trim());
+      const list = await this.getDocs(hits, cols, scoring);
       const result: any = { list };
       // 先正常 search，最后调函数补充 refs
       const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
@@ -647,14 +708,14 @@ export class Chaser extends Cradle {
       return result;
     }
     if (mode === 'list-more') {
-      const list = await this.getDocs(hits.slice(0, size), cols, !!wd?.trim());
+      const list = await this.getDocs(hits.slice(0, size), cols, scoring);
       const result: any = { list, more: hits.length > size };
       // 先正常 search，最后调函数补充 refs
       const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
       if (refsData) result.refs = refsData;
       return result;
     }
-    const list = await this.getDocs(hits, cols, !!wd?.trim());
+    const list = await this.getDocs(hits, cols, scoring);
     const result: any = {
       list,
       total : tot?.value ?? 0,
@@ -687,8 +748,9 @@ export class Chaser extends Cradle {
     for (const h of hits) {
       const doc = byId.get(String(h._id));
       if (! doc) continue;
-      // wd 非空时把 _score 并入结果：strict 下 Document 普通属性赋值不进 toJSON，须写内部存储
-      if (withScore && h._score !== undefined) (doc as any)._doc._score = h._score;
+      // scoring 时把 _score 并入结果：strict 下 Document 普通属性赋值不进 toJSON，须写内部存储；
+      // 显式 sort 且未开 scoring 时 ES 返回 _score: null，跳过即可
+      if (withScore && typeof h._score === 'number') (doc as any)._doc._score = h._score;
       out.push(doc);
     }
     return out;
@@ -738,7 +800,7 @@ export class Chaser extends Cradle {
         for (const [field, values] of Object.entries(sels)) {
           if (!Array.isArray(values) || !values.length) continue;
           const conds: EsCond[] = [];
-          this.fieldConds(field, { $in: values }, conds);
+          this.fieldConds(conds, field, { $in: values });
           selConds[field] = conds;
         }
       }

@@ -51,6 +51,7 @@ export interface DeleteResult {
 export interface SearchParams {
   id?: string | string[];
   wd?: string;
+  mods?: string[];
   mode?: FindMode;
   find?: FindSpec;
   sort?: SortSpec;
@@ -253,10 +254,10 @@ export interface RefItem {
 }
 
 export interface RefPath {
-    path: string[];
-    name: string  ; // 全名，对应 path.join('.')
-    key : string  ; // 键名，对应 refName，默认同 name
-    ref : RefItem ;
+  path: string[];
+  name: string  ; // 全名，对应 path.join('.')
+  key : string  ; // 键名，对应 refName，默认同 name
+  ref : RefItem ;
 }
 
 export interface SoftDel {
