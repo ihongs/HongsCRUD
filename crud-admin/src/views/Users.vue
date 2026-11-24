@@ -266,6 +266,7 @@ async function load() {
       sort: { createdAt: -1 },
       start: start.value,
       limit,
+      mode: 'list-total',   // 分页需 total：0.2.5 起缺省只返回 list
     };
     if (wd.value) params.wd = wd.value;
     if (role.value) params.find = { roles: role.value };

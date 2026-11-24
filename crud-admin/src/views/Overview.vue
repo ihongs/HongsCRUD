@@ -169,7 +169,7 @@ async function load() {
         sort: { createdAt: -1 },
         cols: { username: 1, name: 1, avatar: 1, roles: 1, createdAt: 1 },
       }),
-      searchApiKeys(),
+      searchApiKeys({ mode: 'list-total' }),   // 需 keys.total：0.2.5 起缺省只返回 list
     ]);
 
     total.value = t.total || 0;
