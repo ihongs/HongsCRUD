@@ -144,8 +144,8 @@ export class Chaser extends Cradle {
       return super.search(rest as SearchParams, ctx);
     }
 
+    // 增加匹配度打分排序和字段投影
     const score = this._csOpts.scoreKey;
-
     const next: SearchParams = { ...params, wd: text };
     if (! params.sort) next.sort = { [score]: { $meta: 'textScore' } } as any;
     if (! params.cols) next.cols = { [score]: { $meta: 'textScore' } } as any;

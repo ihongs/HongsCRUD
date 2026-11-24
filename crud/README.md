@@ -192,11 +192,11 @@ mongoose 选项到 JSON Schema 的映射：
   sort : { createdAt: -1 },           // 排序
   start: 0,                           // 跳过
   limit: 20,                          // 上限；缺省用 schema.limitDef，超过 limitMax 抛异常
-  mode: '',                           // 列表模式，见下
+  mode: 'list-total',                 // 列表模式，缺省只返回 list，见下
   refs: true,                         // 关联数据：true 全部，或 {字段名: 1} 白名单，见下
 }
 
-// 返回
+// 返回（mode: 'list-total'；缺省不带 total）
 {
   list : [{ _id: '66b...a01', username: 'alice', status: 'active' }, ...],
   total: 32,
@@ -210,9 +210,9 @@ mongoose 选项到 JSON Schema 的映射：
 
 | 值 | 返回 |
 |---|---|
-| 未传 | `{ list, total }` |
+| 未传 | `{ list }` |
+| `'list-total'` | `{ list, total }` |
 | `'list-more'` | `{ list, more }` |
-| `'only-list'` | `{ list }` |
 | `'only-total'` | `{ total }` |
 
 `refs` 关联数据：对结果 `list` 里声明了 `reference` 的字段，按聚集名 `reference.refName`（默认字段名）收集外键值（数组自动展开去重）——多个字段同指一个 refName（如工作单位所在地和毕业院校所在地都指向地区表）时，共享首个字段的 ref 配置（method、params 等），收集的外键值合并去重后一起查；各聚集名分别调 `reference.method`（经 `callFunc` 调度，需相应权限），返回 `{refName: [关联数据]}`（按外键查到的行数组，不建外键映射，映射由前端按需建立）。`refs` 传 `true` 全取，传对象时按字段名或 refName 命中：全为 `1` 是白名单，含 `0` 是黑名单，`undefined` / `null` 等同 `false` 不取（默认不取关联）。
@@ -794,10 +794,43 @@ class UserChaser extends Chaser {
   - 启用后默认按 `_score` 倒序；若同时传 `sort`，`_score` 为**第一排序键**（`sort` 里写 `_score: 1` 可改为升序），其后才按其他字段；结果文档附带 `_score` 数值（不受 `cols` 限制）。
   - 不传任何打分标志时全部条件进 `filter`、不计分、也不返回 `_score`；仅 `Chaser.search` 读取，`Cradle` / `statis` 忽略。
 - **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 `textable: true` 的 String 可用，ES 侧翻译为 `match`（打 `.text` 子字段；`termsize: 0` 的纯 text 字段打主名），缺省不写 `operator`（沿用 ES `match` 默认的 `or`，任一词命中）；同级可用 `$searchLogic` 调整词间关系：`all` → `and`（须全部分词命中）、`any` → `or`，其他值抛 `PARAMS_INVALID`；`$searchBoost` 透传为 `boost` 加权（需配合 `mods` 的 `'score'` / `'score-all'` 才影响排序）。分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 命中 `hello` 或 `world` 其一即可，`find: { body: { $search: 'hello world', $searchLogic: 'all', $searchBoost: 2 } }` 则要求两者同时命中并加权；非 textable 字段或空串抛 `PARAMS_INVALID`。
-- 排序、分页（`start` / `limit`）、四种 `mode` 模式与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
+- 排序、分页（`start` / `limit`）、`mode` 模式（缺省仅 `list`，`list-total` 才返回 `total`）与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
 - **扁平模式的限制**：数组子文档未标 `nested: true` 时按 `object` 扁平索引，元素间的关联会丢失，跨字段的联合条件不保证落在同一元素。如 `find: { 'works.tag': 'a', 'works.qty': 9 }` 在扁平模式下会误命中「tag=a 与 qty=9 分属两个元素」的文档；要求同一元素同时满足时给该字段标 `nested: true`。
 - `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`statis` 统计自动内嵌 `reverse_nested` 回到父文档计数。
 - 不加软删除条件：ES 里只有有效文档；「已伪删但 ES 尚未同步」的滞后命中由回 mongo 查询的软删除条件自然过滤（等同跳过）。
+
+**自定义查询**：`getQuery(cond, mode)` 是 `search` / `statis` 共用的翻译入口（返回完整 ES query），`cond` 为 `mixFinds` 合并后的条件（`_id` / `$text` / `find` 原样），`mode` 为打分模式。重写它即可处理自定义条件、拼接 script query。约定虚拟字段 `vFieldx` 表示 `field1 * 0.8 + field2 * 0.5 >= 阈值`：
+
+```ts
+class MyChaser extends Chaser {
+  getQuery(
+    cond : FindSpec,                     // mixFinds 合并后的条件：_id / $text / find 原样
+    mode : 0 | 1 | 2 = 0,                // 0 不打分 / 1 文本打分 / 2 尽可能多条件打分
+  ): Record<string, any> {
+    // 先摘出自定义键，其余原样交给 super；否则会被 fieldConds 当字段名校验而抛 PARAMS_INVALID
+    const { vFieldx, ...rest } = (cond || {}) as Record<string, any>;
+    const base = super.getQuery(rest, mode);
+    if (vFieldx === undefined) return base;
+
+    const min = typeof vFieldx === 'object' ? vFieldx.$gte : vFieldx;
+    return { bool: {
+      must  : [base],                    // 用 must 包住原查询，保留既有条件与打分
+      filter: [{ script: { script: {
+        // doc values 缺值须兜底，否则 painless 直接抛错
+        source: `def a = doc['field1'].size() > 0 ? doc['field1'].value : 0;`
+              + `def b = doc['field2'].size() > 0 ? doc['field2'].value : 0;`
+              + `a * 0.8 + b * 0.5 >= params.min`,
+        params: { min },
+      } } }],
+    } };
+  }
+}
+```
+
+- 调用侧无感：`search({ find: { vFieldx: { $gte: 10 } } })`，可与普通字段条件、`wd`、`mods` 混用。
+- `mixFinds` 在 `search` / `statis` 里完成，传进来时 `_id` / `$text` 已经合并好；`mode` 由 `mods` 折算（`'score'` → 1、`'score-all'` → 2、无 → 0），`statis` 不传 `mode`（等价 0），自定义条件在列表与统计里口径一致。
+- 只扩展「单字段 + 新操作符」时，重写 `fieldConds(conds, field, value)` 更轻；需要改整棵查询（虚拟字段、脚本、跨条件合并）再用 `getQuery`。
+- script query 依赖 doc values：引用字段须可索引且 `syncable` 非 false；作为过滤条件时放 `filter` 不污染分数，若要参与相关度需改用 `function_score` / `script_score`。
 
 **自定义排序**：`getSort` 为 `protected`，负责把外部 `sort` 翻译为 ES sort 数组（数组序即多级排序优先级），重写它可接入脚本排序。如约定虚拟字段 `vFieldx` 表示按 `field1 * 0.8 + field2 * 0.5` 加权排序：
 

@@ -185,7 +185,7 @@ async function main(): Promise<void> {
   const [ f3 ] = await (cf.add({ name: 'gamma third' , status: 'published', role: 'user' , age: 40, tags: []            , extras: [{ k: 'p', v: 3 }, { k: 'q', v: 4 }] }) as unknown as Promise<[any, string]>);
   await refresh(cf);
 
-  assert('search 全量 total = 3', (await cf.search({ }, CTX as any)).total, 3);
+  assert('search 全量 total = 3', (await cf.search({ mode: 'list-total' }, CTX as any)).total, 3);
   assert('search find status = draft', await names(cf, { find: { status: 'draft' } }), ['alpha first', 'beta second']);
   assert('search find 标量数组元素 tags = red', await names(cf, { find: { tags: 'red' } }), ['alpha first', 'beta second']);
   assert('search find 扁平子文档 extras.k = q', await names(cf, { find: { 'extras.k': 'q' } }), ['beta second', 'gamma third']);
@@ -226,7 +226,7 @@ async function main(): Promise<void> {
   const del1 = await (cf.delAll([ String(f3._id) ]) as unknown as Promise<number>);
   assert('delAll 返回删除数', del1, 1);
   await refresh(cf);
-  assert('delAll 后 total = 2', (await cf.search({ }, CTX as any)).total, 2);
+  assert('delAll 后 total = 2', (await cf.search({ mode: 'list-total' }, CTX as any)).total, 2);
 
   const c3 = await statis(cf, { });
   assert('statis total = 2', c3.total, 2);
@@ -243,7 +243,7 @@ async function main(): Promise<void> {
   await (cn.add({ name: 'job three', status: 'a', works: [ ] }) as unknown as Promise<[any, string]>);
   await refresh(cn);
 
-  assert('search 全量 total = 3', (await cn.search({ }, CTX as any)).total, 3);
+  assert('search 全量 total = 3', (await cn.search({ mode: 'list-total' }, CTX as any)).total, 3);
   assert('search nested 单字段 works.tag = y', await names(cn, { find: { 'works.tag': 'y' } }), ['job one']);
   assert('search nested 范围 works.qty >= 6', await names(cn, { find: { 'works.qty': { $gte: 6 } } }), ['job one', 'job two']);
   // nested 归组是元素级联动：同一 work 元素须同时满足两条件
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
     { name: 'sync one', status: 'draft', role: 'admin', age: 20 },
     { name: 'sync two', status: 'published', role: 'user', age: 30 },
   ]);
-  assert('未同步前 search 查不到', (await cf.search({ }, CTX as any)).total, 0);
+  assert('未同步前 search 查不到', (await cf.search({ mode: 'list-total' }, CTX as any)).total, 0);
 
   const st4 = await cf.syncDocs(docs4, { refresh: 'wait_for' });
   assert('syncDocs 统计', { total: st4.total, indexed: st4.indexed, deleted: st4.deleted, failed: st4.failed },
@@ -283,17 +283,17 @@ async function main(): Promise<void> {
     { name: 'find one', status: 'draft', role: 'user', age: 40 },
     { name: 'find two', status: 'published', role: 'admin', age: 50 },
   ]);
-  assert('新插入未同步（ES 仍只有 2 条）', (await cf.search({ }, CTX as any)).total, 2);
+  assert('新插入未同步（ES 仍只有 2 条）', (await cf.search({ mode: 'list-total' }, CTX as any)).total, 2);
 
   const st5 = await cf.syncFind({ status: 'draft' }, { refresh: 'wait_for' });
   assert('syncFind 条件统计（mongo 命中 draft 2 条）', { total: st5.total, indexed: st5.indexed, deleted: st5.deleted, failed: st5.failed },
     { total: 2, indexed: 2, deleted: 0, failed: 0 });
-  assert('条件同步后 total = 3（find two 仍未同步）', (await cf.search({ }, CTX as any)).total, 3);
+  assert('条件同步后 total = 3（find two 仍未同步）', (await cf.search({ mode: 'list-total' }, CTX as any)).total, 3);
 
   const st6 = await cf.syncFind(undefined, { refresh: 'wait_for' });   // 不传 find 即全量
   assert('syncFind 全量统计（mongo 4 条全部覆写）', { total: st6.total, indexed: st6.indexed, deleted: st6.deleted, failed: st6.failed },
     { total: 4, indexed: 4, deleted: 0, failed: 0 });
-  assert('全量补齐后 total = 4', (await cf.search({ }, CTX as any)).total, 4);
+  assert('全量补齐后 total = 4', (await cf.search({ mode: 'list-total' }, CTX as any)).total, 4);
 
   /* ---------- 6) 伪删除：mongo 留档，ES 物理删除 ---------- */
   console.log('\n--- 6) 伪删除：mongo 留档，ES 物理删除 ---');
@@ -303,12 +303,12 @@ async function main(): Promise<void> {
   const [ p1 ] = await (cs.add({ name: 'keep one', status: 'on' }) as unknown as Promise<[any, string]>);
   await (cs.add({ name: 'keep two', status: 'off' }) as unknown as Promise<[any, string]>);
   await refresh(cs);
-  assert('add 后 total = 2', (await cs.search({ }, CTX as any)).total, 2);
+  assert('add 后 total = 2', (await cs.search({ mode: 'list-total' }, CTX as any)).total, 2);
 
   const del2 = await (cs.delAll([ String(p1._id) ]) as unknown as Promise<number>);   // softDelete：mongo 置标记
   assert('delAll 返回伪删数', del2, 1);
   await refresh(cs);
-  assert('伪删除后 ES total = 1', (await cs.search({ }, CTX as any)).total, 1);
+  assert('伪删除后 ES total = 1', (await cs.search({ mode: 'list-total' }, CTX as any)).total, 1);
   assert('伪删除后 ES 查不到该文档', await names(cs, { find: { status: 'on' } }), [ ]);
   assert('mongo 留档（伪删记录还在）', await MS.countDocuments({ }), 2);
   const p1Doc = await MS.findById(String(p1._id)).select('+isDeleted');
@@ -321,19 +321,19 @@ async function main(): Promise<void> {
 
   const [ z1 ] = await (cz.add({ name: 'lazy one', status: 'on' }) as unknown as Promise<[any, string]>);
   await (cz.add({ name: 'lazy two', status: 'off' }) as unknown as Promise<[any, string]>);
-  assert('写入不自动同步：search 查不到', (await cz.search({ }, CTX as any)).total, 0);
+  assert('写入不自动同步：search 查不到', (await cz.search({ mode: 'list-total' }, CTX as any)).total, 0);
   assert('mongo 已写入', await MZ.countDocuments({ }), 2);
 
   await cz.syncFind(undefined, { refresh: 'wait_for' });   // 全量补齐
-  assert('syncFind 补齐后 total = 2', (await cz.search({ }, CTX as any)).total, 2);
+  assert('syncFind 补齐后 total = 2', (await cz.search({ mode: 'list-total' }, CTX as any)).total, 2);
 
   await (cz.delAll([ String(z1._id) ]) as unknown as Promise<number>);   // 伪删 mongo，不触 ES
-  assert('删除也不自动同步：ES 滞后仍 total = 2', (await cz.search({ }, CTX as any)).total, 2);
+  assert('删除也不自动同步：ES 滞后仍 total = 2', (await cz.search({ mode: 'list-total' }, CTX as any)).total, 2);
 
   const st7 = await cz.syncFind(undefined, { refresh: 'wait_for' });   // 全量：伪删转 delete + purge
   assert('syncFind 统计（z1 转 delete，z2 覆写）', { total: st7.total, indexed: st7.indexed, deleted: st7.deleted, failed: st7.failed },
     { total: 2, indexed: 1, deleted: 1, failed: 0 });
-  assert('伪删记录被清掉：total = 1', (await cz.search({ }, CTX as any)).total, 1);
+  assert('伪删记录被清掉：total = 1', (await cz.search({ mode: 'list-total' }, CTX as any)).total, 1);
   assert('statis total = 1', (await statis(cz, { })).total, 1);
   assert('mongo 伪删记录保留', await MZ.countDocuments({ }), 2);
 
@@ -406,7 +406,7 @@ async function main(): Promise<void> {
   assert('termsize:0 的字段等值静默不命中', await names(cp, { find: { essay: 'tale of two cities' } }), [ ]);
   assert('termsize:-1 的超长串（300 字符）仍可精确匹配', await names(cp, { find: { story: 'y'.repeat(300) } }), ['paper one']);
 
-  const hidHit = await cp.search({ find: { hidden: 'hid-one' }, limit: 10 }, CTX as any);
+  const hidHit = await cp.search({ find: { hidden: 'hid-one' }, limit: 10, mode: 'list-total' }, CTX as any);
   assert('select:false 字段可查', hidHit.total, 1);
   assert('list 默认不含 select:false 字段', (hidHit.list?.[0] as any)?.hidden, undefined);
   const hidCol = await cp.search({ find: { hidden: 'hid-one' }, cols: { hidden: 1 }, limit: 10 }, CTX as any);
@@ -451,7 +451,7 @@ async function main(): Promise<void> {
   await cm.initIndex();
   await (cm.add({ name: 'm one', age: 10 }) as unknown as Promise<[any, string]>);
   await refresh(cm);
-  assert('初始 1 条', (await cm.search({ }, CTX as any)).total, 1);
+  assert('初始 1 条', (await cm.search({ mode: 'list-total' }, CTX as any)).total, 1);
 
   schemaM.add({ nick: { type: String } });                 // Schema 加字段
   assert('旧实例 mapping 不含新字段（构造期缓存）', 'nick' in cm.getMapping().properties, false);
@@ -478,7 +478,7 @@ async function main(): Promise<void> {
   } catch (e) { strictErr = e; }
   assert('dynamic strict：未声明字段直接写 ES 被拒', /strict/i.test(String(strictErr?.message ?? '')), true);
   await refresh(cm2);
-  assert('被拒写入未入库', (await cm2.search({ }, CTX as any)).total, 1);
+  assert('被拒写入未入库', (await cm2.search({ mode: 'list-total' }, CTX as any)).total, 1);
 
   /* ---------- 11) 任务 14：同步进阶 ---------- */
   console.log('\n--- 11) 同步进阶：增量水位 / 孤立清理 / syncCull / 全量重建 ---');
@@ -503,7 +503,7 @@ async function main(): Promise<void> {
   const st11b = await ct.syncFind({ updatedAt: { $gte: t1 } }, { refresh: 'wait_for' });
   assert('增量同步只碰水位后的文档', { total: st11b.total, indexed: st11b.indexed, deleted: st11b.deleted, failed: st11b.failed },
     { total: 2, indexed: 2, deleted: 0, failed: 0 });
-  assert('增量后 total = 4', (await ct.search({ }, CTX as any)).total, 4);
+  assert('增量后 total = 4', (await ct.search({ mode: 'list-total' }, CTX as any)).total, 4);
   const st11c = await ct.syncFind({ updatedAt: { $gte: t2 } }, { refresh: 'wait_for' });
   assert('更晚水位只碰最后一条', st11c.total, 1);
 
@@ -514,13 +514,13 @@ async function main(): Promise<void> {
     document: { name: 'orphan one', status: 'on', fullText: 'orphan one', syncTime: new Date(Date.now() - 60000) },
   });
   await refresh(ct);
-  const orphanHit = await ct.search({ find: { name: 'orphan one' }, limit: 10 }, CTX as any);
+  const orphanHit = await ct.search({ find: { name: 'orphan one' }, limit: 10, mode: 'list-total' }, CTX as any);
   assert('孤立记录 ES 命中但回 mongo 丢弃', { total: orphanHit.total, list: orphanHit.list }, { total: 1, list: [ ] });
 
   const st11d = await ct.syncFind(undefined, { refresh: 'wait_for' });   // 全量：补齐 + 收尾 purge
   assert('全量同步清掉孤立记录', { total: st11d.total, indexed: st11d.indexed, deleted: st11d.deleted, failed: st11d.failed },
     { total: 4, indexed: 4, deleted: 1, failed: 0 });
-  assert('孤立记录已清', (await ct.search({ }, CTX as any)).total, 4);
+  assert('孤立记录已清', (await ct.search({ mode: 'list-total' }, CTX as any)).total, 4);
 
   // 单独 syncCull：把某条 ES 文档的同步戳改旧，按水位删除（since 早于最近一次全量同步）
   const staleDoc = await MT.findOne({ name: 'inc one' });
@@ -529,19 +529,19 @@ async function main(): Promise<void> {
     document: { name: 'inc one', status: 'on', syncTime: new Date(Date.now() - 120000) },
   });
   await refresh(ct);
-  assert('旧同步戳文档仍在索引', (await ct.search({ }, CTX as any)).total, 4);
+  assert('旧同步戳文档仍在索引', (await ct.search({ mode: 'list-total' }, CTX as any)).total, 4);
   const purge = await ct.syncCull({ since: new Date(Date.now() - 60000), refresh: true });
   assert('syncCull 按水位删除', { total: purge.total, indexed: purge.indexed, deleted: purge.deleted, failed: purge.failed },
     { total: 1, indexed: 0, deleted: 1, failed: 0 });
-  assert('删除后 total = 3', (await ct.search({ }, CTX as any)).total, 3);
+  assert('删除后 total = 3', (await ct.search({ mode: 'list-total' }, CTX as any)).total, 3);
   await ct.syncFind({ name: 'inc one' }, { refresh: 'wait_for' });   // 条件同步补回
-  assert('补回后 total = 4', (await ct.search({ }, CTX as any)).total, 4);
+  assert('补回后 total = 4', (await ct.search({ mode: 'list-total' }, CTX as any)).total, 4);
 
   assert('syncCull 不传 since 抛 PARAMS_INVALID', await errnoOf(() => ct.syncCull({ refresh: true } as any)), -32602);
 
   // 全量重建：改字段类型 / 分词只能走这条（有空窗）
   await ct.initIndex();
-  assert('重建后索引为空', (await ct.search({ }, CTX as any)).total, 0);
+  assert('重建后索引为空', (await ct.search({ mode: 'list-total' }, CTX as any)).total, 0);
   const st11e = await ct.syncFind(undefined, { refresh: 'wait_for' });
   assert('重建后全量回填', { total: st11e.total, indexed: st11e.indexed, deleted: st11e.deleted, failed: st11e.failed },
     { total: 4, indexed: 4, deleted: 0, failed: 0 });

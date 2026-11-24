@@ -2,7 +2,7 @@
 
 import type { Document } from 'mongoose';
 
-export type FindMode = 'only-total' | 'only-list' | 'list-more';
+export type FindMode = 'only-total' | 'list-total' | 'list-more';
 export type FindSpec = Record<string, any>;
 export type SelsSpec = Record<string, any[] >; // 已选 {field: [value1, value2, ...]}
 export type SortSpec = Record<string, 1 | -1>;
@@ -65,8 +65,8 @@ export interface SearchParams {
 export interface SearchResult {
   list ?: Document[];
   refs ?: Record<string, any[]>; // 关联数据 {field: [{_id: '123', name: '关联项1'}, {_id: '456', name: '关联项2'}]}
-  more ?: boolean;
-  total?: number;
+  more ?: boolean; // mode 为 list-more 时才有
+  total?: number;  // mode 为 list-total / only-total 时才有
   [key: string]: any;
 }
 
@@ -74,10 +74,10 @@ export interface StatisParams {
   id?: string | string[];
   wd?: string;
   find?: FindSpec;
-  cols?: ColsSpec;
   sels?: SelsSpec;
-  tops?: TopsSpec;
+  cols?: ColsSpec;
   refs?: RefsSpec;
+  tops?: TopsSpec;
   [key: string]: any;
 }
 

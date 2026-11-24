@@ -234,16 +234,15 @@ export class Chaser extends Cradle {
   /* ---------- find -> DSL 翻译（见 2.1） ---------- */
 
   /**
-   * 把 find / id / wd 翻译为 ES query DSL（对照表见 2.1），供 search / statis 共用
-   * 先按 mongo 口径经 mixFinds 合成查询结构（id -> _id，wd -> $text，find 原样），再交给 collectAnd 翻译；
+   * 把合并后的查询条件翻译为 ES query DSL（对照表见 2.1），供 search / statis 共用
+   * cond 为 mixFinds 的产物（id -> _id，wd -> $text，find 原样）；
    * mode 为 0 时全部进 filter；1 / 2 时按子句上的 score / scoreAll 标记拆入 must
    */
-  getQuery(find?: FindSpec, id?: string | string[], wd?: string, mode: ScoreMode = 0): Record<string, any> {
-    const spec = mixFinds(id, wd, find);
-    if (!Object.keys(spec).length) return { match_all: {} };
+  getQuery(cond: FindSpec, mode: ScoreMode = 0): Record<string, any> {
+    if (!Object.keys(cond).length) return { match_all: {} };
 
     const conds: EsCond[] = [];
-    this.collectAnd(conds, [spec], mode);
+    this.collectAnd(conds, [cond], mode);
     return this. wrapQuery (conds, mode);
   }
 
@@ -639,12 +638,12 @@ export class Chaser extends Cradle {
 
     await this.makeIndex();
 
-    const mods = Array.isArray(params.mods) ? params.mods : [];
-    const scoreMode: ScoreMode = mods.includes('score-all') ? 2
-                               : mods.includes('score')     ? 1
-                               : 0;
-    const scoring = scoreMode !== 0;
-    const query   = this.getQuery(find, id, wd, scoreMode);
+    const mods  = Array.isArray(params.mods) ? params.mods : [];
+    const scoreMode : ScoreMode = mods.includes('score-all') ? 2
+                                : mods.includes('score')     ? 1
+                                :   0;
+    const scoreOpen = scoreMode !== 0;
+    const query = this.getQuery(mixFinds(id, wd, find), scoreMode);
 
     // 0 不限（limitMax = 0 时），默认 limitDef，受 limitMax 约束：语义与报错沿用 Cradle.search
     const opts  = (this.getSchema() as any).options || {};
@@ -676,7 +675,7 @@ export class Chaser extends Cradle {
       size : mode === 'list-more' ? size + 1 : size,   // 多取一条判断 more
       _source: false,
     };
-    if (scoring) {
+    if (scoreOpen) {
       // 有 sort 时 _score 作为第一排序键；sort 里显式写 _score 时取其方向（默认倒序）
       const { _score: dir, ...rest } = (sort || {}) as Record<string, any>;
       const restSort = Object.keys(rest).length ? this.getSort(rest) : [];
@@ -692,35 +691,34 @@ export class Chaser extends Cradle {
     }
 
     const res  = (await this.getClient().search({ index: this.getIndex(), ...body } as any)) as any;
+    const tot  = res.hits?.total;  // { value, relation }
     const hits = res.hits?.hits ?? [];
-    const tot  = res.hits?.total;   // { value, relation }
 
     // 回表只影响文档内容，only-total 无 list 不回表，见 3 节
     if (mode === 'only-total') {
       return { total: tot?.value ?? 0, totalRel: tot?.relation };
     }
-    if (mode === 'only-list') {
-      const list = await this.getDocs(hits, cols, scoring);
-      const result: any = { list };
+
+    if (mode === 'list-total') {
+      const list = await this.getDocs(hits, cols, scoreOpen);
+      const result: any = { list, total: tot?.value ?? 0, totalRel: tot?.relation };
       // 先正常 search，最后调函数补充 refs
       const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
       if (refsData) result.refs = refsData;
       return result;
     }
+
     if (mode === 'list-more') {
-      const list = await this.getDocs(hits.slice(0, size), cols, scoring);
+      const list = await this.getDocs(hits.slice(0, size), cols, scoreOpen);
       const result: any = { list, more: hits.length > size };
       // 先正常 search，最后调函数补充 refs
       const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
       if (refsData) result.refs = refsData;
       return result;
     }
-    const list = await this.getDocs(hits, cols, scoring);
-    const result: any = {
-      list,
-      total : tot?.value ?? 0,
-      totalRel: tot?.relation,
-    };
+
+    const list = await this.getDocs(hits, cols, scoreOpen);
+    const result: any = { list };
     // 先正常 search，最后调函数补充 refs
     const refsData = await fillSearchRefs(this.getRefPaths(), list, refs, ctx);
     if (refsData) result.refs = refsData;
@@ -792,7 +790,7 @@ export class Chaser extends Cradle {
       await this.makeIndex();
 
       const { id, wd, find, sels, cols, refs, tops = 10 } = params;
-      const query = this.getQuery(find, id, wd);   // 不含 sels，各聚合自行叠加，见 4 节
+      const query = this.getQuery(mixFinds(id, wd, find));   // 不含 sels，各聚合自行叠加，见 4 节
 
       // sels -> 条件（空数组视为没选，不生成条件），联动语义与 Cradle.statis 一致
       const selConds: Record<string, EsCond[]> = {};

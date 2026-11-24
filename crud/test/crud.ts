@@ -186,17 +186,17 @@ async function main(): Promise<void> {
   // ---------- 3) search ----------
   console.log('\n--- 3) search() ---');
   // 注意：search 默认 limit = 1，需显式传 limit 才能返回多条
-  // 默认返回 { list, total }
+  // 默认只返回 { list }
   const listAll = await callSearch({ limit: 100 });
-  assertOk('no mode 返回 3 条', listAll.list.length === 3 && listAll.total === 3);
+  assertOk('no mode 只返回 list', listAll.list.length === 3 && listAll.total === undefined);
 
-  // mode: 'only-list' 只返回 list
-  const onlyList = await callSearch({ mode: 'only-list' });
-  assertOk('mode:only-list 只有 list', onlyList.list && onlyList.count === undefined);
+  // mode: 'list-total' 返回 list 和 total
+  const listTotal = await callSearch({ mode: 'list-total', limit: 100 });
+  assertOk('mode:list-total 有 list 和 total', listTotal.list.length === 3 && listTotal.total === 3);
 
   // mode: 'only-total' 只返回 total
   const onlyCount = await callSearch({ mode: 'only-total' });
-  assertOk('mode:only-total 只有 total', onlyCount.total && onlyCount.list === undefined);
+  assertOk('mode:only-total 只有 total', onlyCount.total === 3 && onlyCount.list === undefined);
 
   // mode: 'list-more' 探测更多
   const next1 = await callSearch({ start: 0, limit: 2, mode: 'list-more' });
@@ -441,7 +441,7 @@ async function main(): Promise<void> {
   const p1 = await callSearch({ find: { name: 'p1' } });
   await callDelete({ id: p1.list[0]._id.toString() });
   // 默认 search 只返回未软删
-  const remain = await callSearch({ find: { status: 'draft' } });
+  const remain = await callSearch({ find: { status: 'draft' }, mode: 'list-total' });
   assert('软删后 search 只剩 p2', remain.list.map((d: any) => d.name).join(','), 'p2');
   assert('软删后 search 数量也变', remain.total, 1);
 

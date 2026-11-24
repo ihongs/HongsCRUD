@@ -423,14 +423,6 @@ export class Cradle implements Crud {
         return result;
       });
 
-    if (mode === 'only-total') {
-      return Model.countDocuments(cond).then(total => ({ total })) as unknown as SearchResult;
-    }
-
-    if (mode === 'only-list') {
-      return withRefs(buildQuery().exec().then(list => ({ list }))) as unknown as SearchResult;
-    }
-
     if (mode === 'list-more') {
       return withRefs(Promise.all([
         buildQuery().exec(),
@@ -438,10 +430,18 @@ export class Cradle implements Crud {
       ]).then(([list, more]) => ({ list, more: !!more }))) as unknown as SearchResult;
     }
 
-    return withRefs(Promise.all([
-      buildQuery().exec(),
-      Model.countDocuments(cond),
-    ]).then(([list, total]) => ({ list, total }))) as unknown as SearchResult;
+    if (mode === 'list-total') {
+      return withRefs(Promise.all([
+        buildQuery().exec(),
+        Model.countDocuments(cond),
+      ]).then(([list, total]) => ({ list, total }))) as unknown as SearchResult;
+    }
+
+    if (mode === 'only-total') {
+      return Model.countDocuments(cond).then(total => ({ total })) as unknown as SearchResult;
+    }
+
+    return withRefs(buildQuery().exec().then(list => ({ list }))) as unknown as SearchResult;
   }
 
   statis(params: StatisParams, ctx: Context): StatisResult {
