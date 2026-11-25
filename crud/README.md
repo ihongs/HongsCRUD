@@ -481,6 +481,7 @@ enum CrudErrno {
   PARAMS_INVALID = -32602,   // 参数非法
   INTERNEL_ERROR = -32603,   // 内部错误
   LOGIN_REQUIRED = -32001,   // 需要登录
+  TOKEN_DECEASED = -32002,   // 访问令牌已过期
   RIGHT_DEPRIVED = -32003,   // 权限不足（isPermitted 拒绝）
   ALTER_REJECTED = -32009,   // 目标 id 不存在 / 非当前可变更的数据
 }
