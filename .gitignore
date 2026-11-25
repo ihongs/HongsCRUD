@@ -30,10 +30,9 @@ package-lock.json
 pnpm-lock.yaml
 yarn.lock
 
-# 上传文件目录
-/crud-api/static/upload/
-/crud-api/upload/
-/crud-api/server/tmp/
+# 临时文件、上传目录
+/crud-api/data/tmp/
+/crud-api/data/www/upload/
 
 # 环境变量
 .env
