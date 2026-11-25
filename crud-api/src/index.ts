@@ -15,7 +15,13 @@ import { handleRest } from './api/rest';
 const PORT = Number(process.env.PORT) || 3000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/crud';
 
-// 确保 JWT_SECRET 在启动时已设置（auth.ts 会再次校验）
+// ES 客户端，辅助检索
+// import { setEsClient } from 'hongs-crud/es';
+// import { Client } from '@elastic/elasticsearch';
+// const ES_URL = process.env.ES_URL || 'http://127.0.0.1:9200';
+// setEsClient(new Client({ node: ES_URL }));
+
+// 确保 JWT_SECRET 在启动时已设置
 void process.env.JWT_SECRET;
 
 async function main() {
