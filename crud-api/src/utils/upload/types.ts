@@ -73,21 +73,19 @@ export interface UploadCredential {
   accessUrl : string;
 }
 
-/** 签发上传指令的入参（调用方已完成 scene/ext/size 校验） */
+/** 签发上传指令的入参（调用方已完成 scene/ext 校验） */
 export interface UploadIssueParams {
   /** 场景（子目录名），由签发方固定，如 mine.upload 用 avatar */
   scene: string;
-  size : number;
   ext  : string;
-  uid  : string; // local 需要，云存储可忽略
 }
 
 /** 存储入参：文件已写入临时文件，等待驱动落盘/中转。key 决定最终位置，ext/大小均从 key 与文件本身得出 */
 export interface UploadStoreParams {
   /** 本地临时文件路径 */
-  path: string;
-  /** 存储键（相对存储根），由 storeKey(scene, ext) 生成 */
-  key : string;
+  path : string;
+  /** 存储键，由 storeKey(scene, ext) 生成 */
+  key  : string;
 }
 
 /**

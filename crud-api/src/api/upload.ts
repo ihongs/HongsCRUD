@@ -54,7 +54,7 @@ function resolveUpload(ctx: Context): UploadTicket | null {
   const data = readAccess(tok, UPLOAD_SECRET);
   if (! data) return null;
 
-  const key  = typeof data.data.key === 'string' ? data.data.key : '';
+  const key  = typeof data.sub === 'string' ? data.sub : '';
   const kind = kindOf(extOfKey(key));
   if (! kind) return null;
 
@@ -76,16 +76,16 @@ export async function handleUpload(ctx: Context): Promise<void> {
   }
 
   const ticket = resolveUpload(ctx);
-  if (!ticket) {
+  if (! ticket) {
     return fail(ctx, 401, 'Missing or invalid token', 'invalid_token');
   }
 
   const maxSize = MAX_FILE_SIZE[ticket.kind];
 
   // 有 Content-Length 时先挡掉明显超限的请求
-  const lenRaw   = ctx.get('content-length');
-  const declared = lenRaw ? Number(lenRaw) : NaN;
-  if (Number.isFinite(declared) && declared > maxSize) {
+  const lenRaw = ctx.get('content-length');
+  const lenDec = lenRaw ? Number(lenRaw) : NaN;
+  if (Number.isFinite(lenDec) && lenDec > maxSize) {
     return fail(ctx, 413, `File too large, max ${Math.round(maxSize / 1024 / 1024)}MB`, 'too_large');
   }
 

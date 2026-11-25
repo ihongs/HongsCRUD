@@ -91,8 +91,8 @@ export class S3UploadDriver implements UploadDriver {
       Bucket       : this.bucket,
       Key          : key,
       Body         : createReadStream(path),
+      ContentType  : mimeOf (extOfKey(key)),
       ContentLength: size,
-      ContentType  : mimeOf(extOfKey(key)),
     }));
     return this.publicUrl(key);
   }

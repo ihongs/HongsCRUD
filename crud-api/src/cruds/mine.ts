@@ -103,7 +103,7 @@ export class Mine extends User implements Crud {
       throw new CrudError(`File too large, max ${Math.round(maxSize / 1024 / 1024)}MB`, CrudErrno.PARAMS_INVALID, { reason: 'too_large' });
     }
 
-    return uploadDriver.issue({ uid, scene: 'avatar', ext, size });
+    return uploadDriver.issue({ scene: 'avatar', ext });
   }
 }
 

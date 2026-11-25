@@ -26,9 +26,9 @@ export class LocalUploadDriver implements UploadDriver {
    * 前端直接把文件 PUT 到这个 url 即可（存储键 key 由 token 声明决定）。
    * 存储键在签发时生成并写入 token，因此 accessUrl 在 config 阶段就已确定。
    */
-  async issue({ scene, ext, uid }: UploadIssueParams): Promise<UploadCredential> {
+  async issue({ scene, ext }: UploadIssueParams): Promise<UploadCredential> {
     const key   = storeKey(scene, ext);
-    const token = signAccess(uid, { key }, undefined, UPLOAD_SECRET);
+    const token = signAccess(key, undefined, undefined, UPLOAD_SECRET);
     return {
       url      : `/api/upload?token=${encodeURIComponent(token)}`,
       method   : 'PUT',

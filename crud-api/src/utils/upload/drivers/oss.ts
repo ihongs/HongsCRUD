@@ -41,20 +41,20 @@ export class OssUploadDriver implements UploadDriver {
   constructor() {
     this.bucket     = required('OSS_BUCKET');
     this.region     = process.env.OSS_REGION || 'oss-cn-hangzhou';
-    this.cname      = process.env.OSS_CNAME === 'true';
     this.secure     = process.env.OSS_SECURE !== 'false';
+    this.cname      = process.env.OSS_CNAME  === 'true' ;
     this.endpoint   = normalizeEndpoint(process.env.OSS_ENDPOINT, this.secure ? 'https' : 'http');
     this.publicBase = process.env.OSS_PUBLIC_BASE_URL?.replace(/\/+$/, '');
 
     this.client = new OSS({
-      region: this.region,
-      endpoint: this.endpoint,
       bucket: this.bucket,
+      region: this.region,
+      secure: this.secure,
       cname: this.cname,
+      endpoint: this.endpoint,
+      stsToken: process.env.OSS_STS_TOKEN,
       accessKeyId: required('OSS_ACCESS_KEY_ID'),
       accessKeySecret: required('OSS_ACCESS_KEY_SECRET'),
-      stsToken: process.env.OSS_STS_TOKEN,
-      secure: this.secure,
     });
   }
 
