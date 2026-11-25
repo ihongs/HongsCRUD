@@ -12,6 +12,7 @@ import {
   StatisParams,
   StatisResult,
 } from 'hongs-crud';
+import { uploadDriver, kindOf, MAX_FILE_SIZE, type UploadCredential } from '../utils/upload';
 import { User, UserApiKey, genApiKey } from './user';
 
 /* ---------- 通用工具 ---------- */
@@ -30,7 +31,7 @@ function requireUid(ctx: Context, action: string): string {
 /* ---------- Mine（自己的用户信息）---------- */
 
 export class Mine extends User implements Crud {
-  callable = ['search', 'update'];   // 只允许查 & 改自己
+  callable = ['search', 'update', 'upload'];   // 只允许查 & 改自己，以及签发自己的上传指令
 
   /* ----- create / delete / schema / statis：不可调用 ----- */
 
@@ -82,6 +83,26 @@ export class Mine extends User implements Crud {
     params.data = { ...(params.data || {}) };
     delete params.data.roles;   // 禁止用户修改自己的 roles，一律移除（管理接口 user.update 不受影响）
     return super.update(params as any, ctx);
+  }
+
+  /* ----- upload：签发头像上传指令（scene 固定 avatar，仅限图片）----- */
+
+  upload(params: any, ctx: Context): Promise<UploadCredential> {
+    const uid  = requireUid(ctx, 'mine.upload');
+    const name = String(params?.name || '');
+    const size = Number(params?.size) || 0;
+    const ext  = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    const kind = kindOf(ext);
+
+    if (kind !== 'image') {
+      throw new CrudError(`Unsupported avatar type: .${ext}`, CrudErrno.PARAMS_INVALID, { reason: 'bad_extension' });
+    }
+    const maxSize = MAX_FILE_SIZE[kind];
+    if (size > maxSize) {
+      throw new CrudError(`File too large, max ${Math.round(maxSize / 1024 / 1024)}MB`, CrudErrno.PARAMS_INVALID, { reason: 'too_large' });
+    }
+
+    return uploadDriver.issue({ uid, scene: 'avatar', ext, size });
   }
 }
 

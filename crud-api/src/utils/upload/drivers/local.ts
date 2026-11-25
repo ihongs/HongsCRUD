@@ -2,12 +2,12 @@ import { copyFile, mkdir, rename } from 'fs/promises';
 import { dirname, join, resolve } from 'path';
 import { signAccess } from '../../../funcs/auth';
 import {
-  storeKey,
+  storeKey, UPLOAD_SECRET,
   type UploadDriver, type UploadStoreParams, type UploadCredential, type UploadIssueParams,
 } from '../types';
 
 /** 上传指令有效期（秒）：取 CHALLENGE_TTL（默认 120s） */
-const CREDENTIAL_TTL = Math.ceil((Number(process.env.CHALLENGE_TTL) || 120 * 1000) / 1000);
+const CREDENTIAL_TTL = Number(process.env.CHALLENGE_TTL) || 120;
 
 /**
  * 本地存储驱动：文件落在 {UPLOAD_DIR}/{scene}/{yyyy/mm/dd}/{uuid}.{ext}
@@ -28,7 +28,7 @@ export class LocalUploadDriver implements UploadDriver {
    */
   async issue({ scene, ext, uid }: UploadIssueParams): Promise<UploadCredential> {
     const key   = storeKey(scene, ext);
-    const token = signAccess(uid, undefined, { key });
+    const token = signAccess(uid, { key }, undefined, UPLOAD_SECRET);
     return {
       url      : `/api/upload?token=${encodeURIComponent(token)}`,
       method   : 'PUT',

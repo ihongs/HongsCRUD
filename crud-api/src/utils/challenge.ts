@@ -9,7 +9,7 @@ if (! JWT_SECRET) {
   throw new Error('JWT_SECRET is required. Set it in environment or .env');
 }
 
-const CHALLENGE_TTL = Number(process.env.CHALLENGE_TTL) || 120 * 1000;
+const CHALLENGE_TTL = Number(process.env.CHALLENGE_TTL) || 120;   // 秒
 const CHALLENGE_DIF = Number(process.env.CHALLENGE_DIF) || 16;
 const CHALLENGE_ALG = 'sha256';
 
@@ -64,7 +64,7 @@ export async function checkChallenge(objective: string, challenge: string, nonce
   if (payload.o !== objective) {
     throw new CrudError('Invalid objective', CrudErrno.PARAMS_INVALID, { reason: 'challenge_invalid' });
   }
-  if (payload.t < Date.now() - CHALLENGE_TTL) {
+  if (payload.t < Date.now() - CHALLENGE_TTL * 1000) {
     throw new CrudError('Challenge expired', CrudErrno.PARAMS_INVALID, { reason: 'challenge_expired' });
   }
 
@@ -77,7 +77,7 @@ export async function checkChallenge(objective: string, challenge: string, nonce
   // 标记只需覆盖挑战剩余有效期，额外留 10 秒兜住 TTL 取整与多实例时钟偏差
   // 一次性消费：add 为原子写入（仅当键不存在），只有一个能写入，其余视为已使用
   const challengeKey = 'pow:' + base64urlEncode(createHash(CHALLENGE_ALG).update(challenge).digest());
-  const remainingSec = Math.max(1, Math.ceil(( payload.t + CHALLENGE_TTL - Date.now() ) / 1000)) + 10;
+  const remainingSec = Math.max(1, Math.ceil(( payload.t + CHALLENGE_TTL * 1000 - Date.now() ) / 1000)) + 10;
   const marked = await kv.add(challengeKey, 1, remainingSec);
   if (! marked) {
     throw new CrudError('Challenge already used' , CrudErrno.PARAMS_INVALID, { reason: 'challenge_marked' });

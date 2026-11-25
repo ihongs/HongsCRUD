@@ -17,7 +17,7 @@ export const UPLOAD_TMP = resolve(process.env.UPLOAD_TMP || './system/tmp');
 // 上传驱动：未配置 UPLOAD_DRIVER 时用内置本地驱动；替换云存储时设 UPLOAD_DRIVER 指向驱动模块。
 // 值为模块（取其默认导出为驱动类，无参构造，驱动类自行读环境变量配置，惯例同 KV_ROSTER）；
 // 模块以 './' '../' 开头时相对运行目录解析，其余按包名。
-// 前端只面对统一的 RPC upload.config 指令信封，切换存储前端零改动。
+// 前端只面对统一的 RPC 上传指令信封，切换存储前端零改动。
 
 export const uploadDriver: UploadDriver = createDriver();
 

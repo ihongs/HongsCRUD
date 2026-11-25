@@ -1,3 +1,4 @@
+import { regSSE } from '../sse';
 
 export function regSSES(): void {
   // 注册 SSE 场景：regSSE('scene', (sse, ctx) => { ... })

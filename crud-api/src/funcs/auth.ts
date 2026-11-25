@@ -6,15 +6,12 @@ import { issueChallenge, checkChallenge } from '../utils/challenge';
 /* ---------- 配置 ---------- */
 
 const JWT_SECRET: string = process.env.JWT_SECRET!;
-if (!JWT_SECRET) {
+if (! JWT_SECRET) {
   throw new Error('JWT_SECRET is required. Set it in environment or .env');
 }
 
-const ACCESS_TTL    = Number(process.env.ACCESS_TTL)    || 15 * 60 * 1000;
-const REFRESH_TTL   = Number(process.env.REFRESH_TTL)   || 365 * 86400000;
-
-/** access token 默认有效期（秒） */
-export const ACCESS_TTL_SECONDS = Math.floor(ACCESS_TTL / 1000);
+const REFRESH_TTL = Number(process.env.REFRESH_TTL) || 365 * 86400;  // 秒
+const ACCESS_TTL  = Number(process.env.ACCESS_TTL)  || 15 * 60;      // 秒
 
 /* ---------- Base64url 工具 ---------- */
 
@@ -31,43 +28,52 @@ function base64urlDecode(str: string): Buffer {
 
 export interface AccessPayload {
   uid : string;
-  /** token 附加数据（签发时写入的 data，如上传的 scene/ext、SSE 的 scene） */
+  /** token 附加数据（签发时写入的 data，内容与用途由签发方自定） */
   data: Record<string, any>;
 }
 
 /**
  * 签发 access JWT。
- * ttl 为有效期（秒）：-1 不限（不写 exp），未设置（含 0）时用 ACCESS_TTL，>0 指定。
  * data 为附加数据，有则写入 payload.data。
- * 普通登录 token 不传 data；上传 / SSE 等场景自行携带所需参数。
+ * ttl 为有效期（秒）：缺省用 ACCESS_SEC，0 不限（不写 exp），>0 指定。
+ * key 为签名密钥：缺省用于登录 token；上传 / SSE 等场景传各自的密钥。
  */
-export function signAccess(uid: string, ttl?: number, data?: Record<string, any>): string {
+export function signAccess(
+  uid  : string,
+  data?: Record<string, any>,
+  ttl  : number = ACCESS_TTL,
+  key  : string = JWT_SECRET,
+): string {
   const header = base64urlEncode(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
   const nowSec = Math.floor(Date.now() / 1000);
   const ttlNum = Number(ttl);
-
   const claims: Record<string, any> = { sub: uid, iat: nowSec };
-  if (ttlNum !== -1) {
-    const ttlSec = ttlNum > 0 ? Math.floor(ttlNum) : ACCESS_TTL_SECONDS;
-    claims.exp = nowSec + ttlSec;
+
+  // ttl 为 0 表示不限
+  if (ttlNum !== 0) {
+    claims.exp = nowSec + Math.floor(ttlNum);
   }
-  if (data && Object.keys(data).length > 0) claims.data = data;
+  if (data && Object.keys(data).length > 0) {
+    claims.data = data;
+  }
 
   const pay = base64urlEncode(Buffer.from(JSON.stringify(claims)));
-  const sig = base64urlEncode(createHmac('sha256', JWT_SECRET).update(`${header}.${pay}`).digest());
+  const sig = base64urlEncode(createHmac('sha256', key).update(`${header}.${pay}`).digest());
   return `${header}.${pay}.${sig}`;
 }
 
 /**
- * 仅校验裸 token（签名 + 过期）：不加载 roles，也不要求 uid 在库中存在。
+ * 解析 access JWT。
  * 用于只需要“token 有效”的场景（token 从 url 参数取）。
+ * 仅校验裸 token（签名 + 过期）：不加载 roles，也不要求 uid 在库中存在。
+ * secret 须与签发时一致：登录 token 用缺省值，上传 / SSE 传各自的密钥。
  */
-export function verifyToken(token?: string): AccessPayload | null {
+export function readAccess(token?: string, secret: string = JWT_SECRET): AccessPayload | null {
   if (!token || !token.startsWith('eyJ')) return null;
-  return verifyAccess(token);
+  return verifyAccess(token, secret);
 }
 
-function verifyAccess(token: string): AccessPayload | null {
+function verifyAccess(token: string, secret: string = JWT_SECRET): AccessPayload | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
 
@@ -75,7 +81,7 @@ function verifyAccess(token: string): AccessPayload | null {
 
   // 重算签名
   const expSig = base64urlEncode(
-    createHmac('sha256', JWT_SECRET).update(`${headerB64}.${payB64}`).digest(),
+    createHmac('sha256', secret).update(`${headerB64}.${payB64}`).digest(),
   );
   // timingSafeEqual 要求等长；长度不等直接判失败
   const sigBuf = Buffer.from(sigB64);
@@ -85,7 +91,7 @@ function verifyAccess(token: string): AccessPayload | null {
   // 解 payload 并验 exp
   try {
     const payload = JSON.parse(base64urlDecode(payB64).toString());
-    // 无 exp 表示不限时（仅 getSSEUrl 用 ttl=-1 签发）
+    // 无 exp 表示不限时（签发时 ttl=0）
     if (payload.exp && payload.exp <= Math.floor(Date.now() / 1000)) return null;
     if (!payload.sub) return null;
     const data = payload.data && typeof payload.data === 'object' ? payload.data : {};
@@ -124,7 +130,7 @@ async function loadUserRoles(uid: string): Promise<string[]> {
  * - 无 token / 失败 → ctx.uid 留空
  * 有 uid 时加载 roles。
  */
-export async function resolveUserCtx(authHeader?: string): Promise<Context> {
+export async function resolveContext(authHeader?: string): Promise<Context> {
   const ctx: Context = {};
   if (! authHeader || !authHeader.startsWith('Bearer ')) {
     return ctx;
@@ -223,14 +229,14 @@ async function authLogin(params: Record<string, any>, _ctx: Context): Promise<an
     userId: u._id,
     app: 'rt',
     key: refreshKey,
-    expiresAt: new Date(now + REFRESH_TTL),
+    expiresAt: new Date(now + REFRESH_TTL * 1000),
   });
 
   return {
     accessToken,
-    accessExp: now + ACCESS_TTL,
+    accessExp: now + ACCESS_TTL * 1000,
     refreshToken: refreshKey,
-    refreshExp: now + REFRESH_TTL,
+    refreshExp: now + REFRESH_TTL * 1000,
     user: { id: uid, name: u.name, avatar: u.avatar },
   };
 }
@@ -263,15 +269,15 @@ async function authRefresh(params: Record<string, any>, _ctx: Context): Promise<
     userId: doc.userId,
     app: 'rt',
     key: newRefreshKey,
-    expiresAt: new Date(now + REFRESH_TTL),
+    expiresAt: new Date(now + REFRESH_TTL * 1000),
   });
 
   const accessToken = signAccess(String(doc.userId));
   return {
     accessToken,
-    accessExp: now + ACCESS_TTL,
+    accessExp: now + ACCESS_TTL * 1000,
     refreshToken: newRefreshKey,
-    refreshExp: now + REFRESH_TTL,
+    refreshExp: now + REFRESH_TTL * 1000,
   };
 }
 

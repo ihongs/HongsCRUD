@@ -8,7 +8,7 @@ import type {
 import { extOfKey, mimeOf, storeKey } from '../types';
 
 /** 上传指令有效期（秒）：取 CHALLENGE_TTL（默认 120s） */
-const CREDENTIAL_TTL = Math.ceil((Number(process.env.CHALLENGE_TTL) || 120 * 1000) / 1000);
+const CREDENTIAL_TTL = Number(process.env.CHALLENGE_TTL) || 120;
 
 function required(name: string): string {
   const value = process.env[name];

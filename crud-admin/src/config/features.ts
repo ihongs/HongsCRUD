@@ -19,7 +19,7 @@ export const FEATURES = {
   userCreate: { label: '新建用户', methods: ['user.create'] },
   userUpdate: { label: '编辑用户', methods: ['user.update'] },
   userDelete: { label: '停用用户', methods: ['user.delete'] },
-  avatarUpload: { label: '上传头像', methods: ['upload.config'] },
+  avatarUpload: { label: '上传头像', methods: ['mine.upload'] },
 
   // API Key 操作
   apiKeyCreate: { label: '创建 API Key', methods: ['mineApiKey.create'] },

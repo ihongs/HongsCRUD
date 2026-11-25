@@ -1,17 +1,15 @@
 import mongoose from 'mongoose';
 import Koa from 'koa';
 import bodyParser from 'koa-bodyparser';
-import type { Context } from 'hongs-crud';
 import { regHooks } from './hooks';
 import { regCruds } from './cruds';
 import { regFuncs } from './funcs';
 import { regRoles } from './roles';
-import { regSSES } from './sses';
+import { regSSES } from './api/sses';
 import { handleRpc } from './api/rpc';
 import { handleSSE } from './api/sse';
 import { handleUpload } from './api/upload';
 import { handleStatic } from './api/static';
-import { resolveUserCtx } from './funcs/auth';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/crud';
 const PORT = Number(process.env.PORT) || 3000;
@@ -33,43 +31,25 @@ async function main() {
   app.use(bodyParser({ enableTypes: ['json'] }));
 
   app.use(async (ctx) => {
-    if (ctx.method === 'POST' && ctx.path === '/api/rpc') {
-      const body = ctx.request.body;
-      if (!body || typeof body !== 'object') {
-        ctx.status = 400;
-        ctx.body = { jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: null };
-        return;
-      }
-
-      // 解析 JWT / API Key → 构造 ctx
-      let userCtx: Context = await resolveUserCtx(ctx.request.headers.authorization);
-
-      // 标记 RPC 调用
-      userCtx.via = 'rpc';
-
-      ctx.body = await handleRpc(body, userCtx);
+    // RPC 接口，内部提取用户 context
+    if (ctx.path === '/api/rpc') {
+      await handleRpc(ctx);
       return;
     }
 
-    // SSE 流（GET；token 走 url 参数：/api/sse?token=...，scene 在许可里）
-    if (ctx.method === 'GET' && ctx.path === '/api/sse') {
+    // SSE 流处理，token 走 url 参数，scene 在许可里
+    if (ctx.path === '/api/sse') {
       await handleSSE(ctx);
       return;
     }
 
-    // 独立上传接口（非 RPC）：只认 upload.config 签发的 token + KV 限流 + 裸流 PUT
-    if (ctx.method === 'PUT' && ctx.path === '/api/upload') {
+    // 独立上传接口，token 走 url 参数，scene 在许可里，启用云存储则不用此接口
+    if (ctx.path === '/api/upload') {
       await handleUpload(ctx);
       return;
     }
 
-    // 非 /api 请求：默认静态资源（static 目录，上传文件也在 static/upload 下）
-    if (!ctx.path.startsWith('/api/')) {
-      await handleStatic(ctx);
-      return;
-    }
-
-    ctx.status = 404;
+    await handleStatic(ctx);
   });
 
   app.listen(PORT, () => {

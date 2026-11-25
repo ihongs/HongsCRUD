@@ -157,7 +157,7 @@
 
 ```
 header  = base64url({"alg":"HS256","typ":"JWT"})
-payload = base64url({"sub":uid, "iat":nowSec, "exp":nowSec+ACCESS_TTL_SEC})
+payload = base64url({"sub":uid, "iat":nowSec, "exp":nowSec+ACCESS_TTL})
 sig     = base64url(hmacSha256(header + '.' + payload, JWT_SECRET))
 token   = header + '.' + payload + '.' + sig
 ```

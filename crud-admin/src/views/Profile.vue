@@ -126,7 +126,7 @@ async function onAvatarChange(e: Event) {
   if (!file) return;
   uploading.value = true;
   try {
-    form.avatar = await uploadFile(file, 'avatar');
+    form.avatar = await uploadFile(file);
     toast('头像已上传，保存后生效', 'success');
   } catch (err: any) {
     toast(reportError('profile.uploadAvatar', err, '头像上传失败'), 'danger');

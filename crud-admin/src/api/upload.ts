@@ -7,10 +7,9 @@ interface UploadConfig {
   accessUrl: string;
 }
 
-/** upload.config 申请上传，再 PUT 文件，返回可访问地址 */
-export async function uploadFile(file: File, scene = 'avatar'): Promise<string> {
-  const cfg = await rpc<UploadConfig>('upload.config', {
-    scene,
+/** mine.upload 申请头像上传，再 PUT 文件，返回可访问地址 */
+export async function uploadFile(file: File): Promise<string> {
+  const cfg = await rpc<UploadConfig>('mine.upload', {
     name: file.name,
     size: file.size,
   });

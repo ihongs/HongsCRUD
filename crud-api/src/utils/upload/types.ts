@@ -1,6 +1,10 @@
 /* 上传类型与场景 */
 
 import { randomUUID } from 'crypto';
+import { UPLOAD_MIME } from '../../types/mimeTypes';
+
+/** 上传 token 独立签名密钥：未配置时由 JWT_SECRET 派生，避免与登录 token 互通 */
+export const UPLOAD_SECRET = process.env.JWT_UPLOAD_SECRET || `${process.env.JWT_SECRET}:upload`;
 
 /**
  * 允许的扩展名（小写，不含点）
@@ -22,37 +26,6 @@ export const MAX_FILE_SIZE: Record<string, number> = {
   file: 20 * 1024 * 1024,
 };
 
-/** 扩展名 → Content-Type（上传预签名与静态访问共用；不含 svg，原因见上方白名单注释） */
-export const MIME_TYPES: Record<string, string> = {
-  jpg : 'image/jpeg',
-  jpeg: 'image/jpeg',
-  png : 'image/png',
-  gif : 'image/gif',
-  webp: 'image/webp',
-  mp4 : 'video/mp4',
-  webm: 'video/webm',
-  mov : 'video/quicktime',
-  m4v : 'video/x-m4v',
-  avi : 'video/x-msvideo',
-  mkv : 'video/x-matroska',
-  mp3 : 'audio/mpeg',
-  wav : 'audio/wav',
-  m4a : 'audio/mp4',
-  aac : 'audio/aac',
-  ogg : 'audio/ogg',
-  flac: 'audio/flac',
-  pdf : 'application/pdf',
-  doc : 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xls : 'application/vnd.ms-excel',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  ppt : 'application/vnd.ms-powerpoint',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  txt : 'text/plain',
-  zip : 'application/zip',
-  rar : 'application/vnd.rar',
-};
-
 /** 扩展名白名单检查：返回归类（image/video/audio/file），非法返回 null */
 export function kindOf(ext: string): string | null {
   if (ALLOWED_EXTENSIONS.image.includes(ext)) return 'image';
@@ -64,7 +37,7 @@ export function kindOf(ext: string): string | null {
 
 /** 取扩展名对应的 Content-Type，未知类型按二进制流处理 */
 export function mimeOf(ext: string): string {
-  return MIME_TYPES[ext.toLowerCase()] || 'application/octet-stream';
+  return UPLOAD_MIME[ext.toLowerCase()] || 'application/octet-stream';
 }
 
 /** 从对象键取扩展名（小写，不含点）；无扩展名返回空串 */
@@ -98,9 +71,9 @@ export interface UploadCredential {
   accessUrl : string;
 }
 
-/** 签发上传指令的入参（upload.config 已完成 scene/ext/size 校验） */
+/** 签发上传指令的入参（调用方已完成 scene/ext/size 校验） */
 export interface UploadIssueParams {
-  /** 场景（子目录名）；白名单由调用方（funcs/upload）按配置校验 */
+  /** 场景（子目录名），由签发方固定，如 mine.upload 用 avatar */
   scene: string;
   size : number;
   ext  : string;

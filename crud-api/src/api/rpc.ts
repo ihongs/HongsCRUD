@@ -1,5 +1,7 @@
+import type { Context as KoaContext } from 'koa';
 import type { Context } from 'hongs-crud';
 import { callFunc, CrudError } from 'hongs-crud';
+import { resolveContext } from '../funcs/auth';
 
 interface RpcRequest {
   jsonrpc?: string;
@@ -43,10 +45,33 @@ async function dispatch(req: RpcRequest, ctx: Context): Promise<RpcResponse> {
   }
 }
 
-export async function handleRpc(body: any, ctx: Context): Promise<RpcResponse | RpcResponse[]> {
-  if (Array.isArray(body)) {
-    if (!body.length) return err(null, -32600, 'Invalid Request: empty batch');
-    return Promise.all(body.map((r) => dispatch(r, ctx)));
+/**
+ * POST /api/rpc
+ * 解析请求体与身份（JWT / API Key），标记 via = 'rpc'，调度后写回响应；批量请求逐条并行处理
+ */
+export async function handleRpc(ctx: KoaContext): Promise<void> {
+  if (ctx.method !== 'POST') {
+    ctx.status = 405;
+    ctx.set('Allow', 'POST');
+    ctx.body = { error: 'Method Not Allowed', reason: 'method_not_allowed' };
+    return;
   }
-  return dispatch(body, ctx);
+
+  const body = ctx.request.body as any;
+  if (!body || typeof body !== 'object') {
+    ctx.status = 400;
+    ctx.body = { jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: null };
+    return;
+  }
+
+  const userCtx: Context = await resolveContext(ctx.request.headers.authorization);
+  userCtx.via = 'rpc';
+
+  if (Array.isArray(body)) {
+    ctx.body = !body.length
+      ? err(null, -32600, 'Invalid Request: empty batch')
+      : await Promise.all(body.map((r) => dispatch(r, userCtx)));
+  } else {
+    ctx.body = await dispatch(body, userCtx);
+  }
 }

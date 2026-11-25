@@ -1,5 +1,8 @@
 import type { Context } from 'koa';
-import { signAccess, verifyToken } from '../funcs/auth';
+import { signAccess, readAccess, ACCESS_SEC } from '../funcs/auth';
+
+/** SSE token 独立签名密钥：未配置时由 JWT_SECRET 派生，避免与登录 token 互通 */
+const SSE_SECRET = process.env.JWT_SSE_SECRET || `${process.env.JWT_SECRET}:sse`;
 
 /** SSE 流对象：data/uid 为许可信息，另含消息与关闭方法 */
 export interface SSEStream {
@@ -28,14 +31,14 @@ export function regSSE(scene: string, handler: SSEHandler): void {
  * 生成绑定 token 的 SSE 连接地址，供业务在创建任务等时机返回给客户端。
  * @param scene 已注册的场景
  * @param uid   许可用户 id（写入 sse.uid）
- * @param ttl   有效期（秒）：-1 不限，0 或不传用 ACCESS_TTL，>0 指定
+ * @param ttl   有效期（秒）：0 不限，缺省用 ACCESS_SEC，>0 指定
  * @param data  业务数据（如 taskId），写入 token，连接时通过 sse.data 读取
  */
-export function getSSEUrl(scene: string, uid: string, ttl = 0, data?: Record<string, any>): string {
+export function getSSEUrl(scene: string, uid: string, ttl = ACCESS_SEC, data?: Record<string, any>): string {
   if (!SSES[scene]) {
     throw new Error(`SSE scene "${scene}" is not registered`);
   }
-  const token = signAccess(uid, ttl, { ...(data || {}), scene });
+  const token = signAccess(uid, { ...(data || {}), scene }, ttl, SSE_SECRET);
   return `/api/sse?token=${encodeURIComponent(token)}`;
 }
 
@@ -47,9 +50,16 @@ export function getSSEUrl(scene: string, uid: string, ttl = 0, data?: Record<str
  * - 有效期内可重复连接；是否禁止复用/提前失效由业务自行决定（需要时自行加 KV）
  */
 export async function handleSSE(ctx: Context): Promise<void> {
+  if (ctx.method !== 'GET') {
+    ctx.status = 405;
+    ctx.set('Allow', 'GET');
+    ctx.body = { error: 'Method Not Allowed', reason: 'method_not_allowed' };
+    return;
+  }
+
   const rawToken = ctx.query.token;
   const token    = typeof rawToken === 'string' ? rawToken : '';
-  const auth     = verifyToken(token);
+  const auth     = readAccess(token, SSE_SECRET);
   const scene    = auth && typeof auth.data.scene === 'string' ? auth.data.scene : '';
 
   // 无效/过期 token，或不是 SSE 许可（没有 scene）都按无效处理

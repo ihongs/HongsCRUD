@@ -6,9 +6,9 @@ import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import type { Context } from 'koa';
 import kv from 'hongs-crud/kv';
-import { verifyToken } from '../funcs/auth';
+import { readAccess } from '../funcs/auth';
 import {
-  UPLOAD_TMP, MAX_FILE_SIZE,
+  UPLOAD_TMP, MAX_FILE_SIZE, UPLOAD_SECRET,
   uploadDriver, extOfKey, kindOf,
 } from '../utils/upload';
 
@@ -45,13 +45,13 @@ interface UploadTicket {
 /**
  * 上传鉴权：token 放在 url 查询参数里（对齐云存储预签名 URL 的用法），
  * 只校验 token 本身（签名 + 过期），不加载用户/角色。
- * 只有 key 由 upload.config 写入 token.data（场景与扩展名都包含在 key 里），
+ * 只有 key 由签发方（如 mine.upload）写入 token.data（场景与扩展名都包含在 key 里），
  * 这里不接受客户端额外传参。
  */
 function resolveUpload(ctx: Context): UploadTicket | null {
   const raw     = ctx.query.token;
   const token   = typeof raw === 'string' ? raw : '';
-  const payload = verifyToken(token);
+  const payload = readAccess(token, UPLOAD_SECRET);
   if (!payload) return null;
 
   const key  = typeof payload.data.key === 'string' ? payload.data.key : '';
@@ -65,11 +65,16 @@ function resolveUpload(ctx: Context): UploadTicket | null {
 
 /**
  * 裸流上传端点：与云存储预签名 PUT 用法完全一致。
- *   1. RPC upload.config({ scene, name, size }) → { url, method, accessUrl, ... }
+ *   1. RPC mine.upload({ name, size }) → { url, method, accessUrl, ... }
  *   2. 直接把文件 PUT 到返回的 /api/upload?token=...（本地）或预签名地址（云存储）
  * 文件流式写入临时文件，边写边校验大小，不整体读入内存。
  */
 export async function handleUpload(ctx: Context): Promise<void> {
+  if (ctx.method !== 'PUT') {
+    ctx.set('Allow', 'PUT');
+    return fail(ctx, 405, 'Method Not Allowed', 'method_not_allowed');
+  }
+
   const ticket = resolveUpload(ctx);
   if (!ticket) {
     return fail(ctx, 401, 'Missing or invalid token', 'invalid_token');
