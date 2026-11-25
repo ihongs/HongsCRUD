@@ -97,7 +97,7 @@ export class Mine extends User implements Crud {
     if (kind !== 'image') {
       throw new CrudError(`Unsupported avatar type: .${ext}`, CrudErrno.PARAMS_INVALID, { reason: 'bad_extension' });
     }
-    const maxSize = MAX_FILE_SIZE[kind];
+    const maxSize = MAX_FILE_SIZE['avatar']; // 尺寸限制不同于一般图片
     if (size > maxSize) {
       throw new CrudError(`File too large, max ${Math.round(maxSize / 1024 / 1024)}MB`, CrudErrno.PARAMS_INVALID, { reason: 'too_large' });
     }

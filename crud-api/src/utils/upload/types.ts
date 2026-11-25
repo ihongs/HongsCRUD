@@ -6,32 +6,34 @@ import { UPLOAD_MIME } from '../../types/mimeTypes';
 /** 上传 token 独立签名密钥：未配置时由 JWT_SECRET 派生，避免与登录 token 互通 */
 export const UPLOAD_SECRET = process.env.JWT_UPLOAD_SECRET || `${process.env.JWT_SECRET}:upload`;
 
+/** 大小上限（字节） */
+export const MAX_FILE_SIZE: Record<string, number> = {
+  avatar: 2 * 1024 * 1024, // 用户头像
+  image:  5 * 1024 * 1024,
+  video: 30 * 1024 * 1024,
+  audio: 10 * 1024 * 1024,
+  file : 20 * 1024 * 1024,
+};
+
 /**
  * 允许的扩展名（小写，不含点）
- * 注意：不要加入 svg。SVG 是可执行脚本的 XML 文档，静态访问会以 image/svg+xml 同源内联返回，
- * 上传者可在本站源下执行 JS（存储型 XSS：窃取 token、冒用接口）。需要矢量图请转 PNG/WebP。
+ * 注意：不要加入 svg。
+ * SVG 是可执行脚本的 XML 文档，静态访问会以 image/svg+xml 同源内联返回，
+ * 上传者可在本站源下执行 JS（存储型 XSS：会窃取 token、冒用接口）。
  */
-export const ALLOWED_EXTENSIONS: Record<string, string[]> = {
+export const ALLOWED_KINDS: Record<string, string[]> = {
   image: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
   video: ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'webm'],
   audio: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'],
-  file: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', '7z', 'txt', 'csv', 'md'],
-};
-
-/** 大小上限（字节） */
-export const MAX_FILE_SIZE: Record<string, number> = {
-  image: 5 * 1024 * 1024,
-  video: 30 * 1024 * 1024,
-  audio: 10 * 1024 * 1024,
-  file: 20 * 1024 * 1024,
+  file : ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'txt', 'md', 'zip', 'rar', '7z'],
 };
 
 /** 扩展名白名单检查：返回归类（image/video/audio/file），非法返回 null */
 export function kindOf(ext: string): string | null {
-  if (ALLOWED_EXTENSIONS.image.includes(ext)) return 'image';
-  if (ALLOWED_EXTENSIONS.video.includes(ext)) return 'video';
-  if (ALLOWED_EXTENSIONS.audio.includes(ext)) return 'audio';
-  if (ALLOWED_EXTENSIONS.file.includes(ext)) return 'file';
+  if (ALLOWED_KINDS.image.includes(ext)) return 'image';
+  if (ALLOWED_KINDS.video.includes(ext)) return 'video';
+  if (ALLOWED_KINDS.audio.includes(ext)) return 'audio';
+  if (ALLOWED_KINDS.file .includes(ext)) return 'file';
   return null;
 }
 
