@@ -191,7 +191,7 @@ export class MineApiKey extends UserApiKey implements Crud {
 
 export const mineApiKey = new MineApiKey();
 
-export function regMineCruds() {
+export function regMineCruds(): void {
   regCrud('mine', mine);
   regCrud('mineApiKey', mineApiKey);
 }

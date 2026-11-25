@@ -131,6 +131,6 @@ export function genApiKey(prefix: 'sk-' | string = 'sk-'): string {
   return `${prefix}${body}`;
 }
 
-export function regUserCruds() {
+export function regUserCruds(): void {
   regCrud('user', user);
 }
