@@ -563,7 +563,7 @@ class ArticleChaser extends Chaser {
 
 ```ts
 await articleCrud.search({ wd: 'mongodb 分词', limit: 20 }, ctx);
-// → { list: [{ ...doc, _score: 1.2 }, ...], total }
+// → { list: [{ ...doc, _score: 1.2 }, ...] }（需 total 时传 mode: 'list-total'）
 ```
 
 > `$text` 是整词匹配：能否命中取决于分词结果。默认分词器把「管理员」切成「管理 / 员」，所以搜「管理」能命中；但搜「理员」这类跨词片段不会命中，需要更高召回就换分词器（见 4.4）。
@@ -575,7 +575,7 @@ await articleCrud.search({ wd: 'mongodb 分词', limit: 20 }, ctx);
 | 方式 | 用法 | 说明 |
 |---|---|---|
 | 默认 | 不配置（或 `csSegmenter: intlSegmenter`） | `intlSegmenter`：`Intl.Segmenter` word 粒度，过滤非词项并小写，中英文通用、零依赖 |
-| jieba | `buildJiebaSegmenter({ mode, hmm })` | 需安装 `@node-rs/jieba`（可选 peer，惰性加载，未装抛 `INTERNEL_ERROR`）；`mode: 'cut'` 精确分词（默认），`'search'` 含子词、召回更高 |
+| jieba | `buildJiebaSegmenter(cfs?, hmm?)` | 需安装 `@node-rs/jieba`（可选 peer，惰性加载，未装抛 `INTERNEL_ERROR`）；`cfs: true` 用 `cutForSearch`（含子词、召回更高，默认 `false`），`hmm: true` 开启 HMM 模型（默认 `false`） |
 | 自定义 | 任意函数 | 交给 `csSegmenter`，可接公司词库、拼音、同义词扩展等 |
 
 ```ts
@@ -584,11 +584,11 @@ import { Chaser, buildJiebaSegmenter } from 'hongs-crud/cs';
 
 const articleSchema = new Schema({ /* ... */ }, {
   collection : 'articles',
-  csSegmenter: buildJiebaSegmenter({ mode: 'search' }),
+  csSegmenter: buildJiebaSegmenter(true),   // cfs = true：含子词，召回更高
 });
 ```
 
-- **换了分词器必须重写存量数据**：全文字段（默认 `_text`）里存的是旧分词器切好的词串，换实现或改 `mode` 后旧文档不会自动重算，需全量重写一遍（按业务路径逐条 `set` 即可），否则只有新增与修改过的文档能被新口径检索到。
+- **换了分词器必须重写存量数据**：全文字段（默认 `_text`）里存的是旧分词器切好的词串，换实现或改 `cfs` / `hmm` 后旧文档不会自动重算，需全量重写一遍（按业务路径逐条 `set` 即可），否则只有新增与修改过的文档能被新口径检索到。
 - 无需重建索引：`text` 索引只按空格切分全文字段，具体分词在应用层完成，换分词器不涉及索引变更（与 ES 组件需 `initIndex()` 重建不同）。
 - 分词器在构造 `Chaser` 时固定，运行期不切换；不同集合需要不同分词器时，各建各的 Schema 与实例即可。
 
@@ -634,14 +634,18 @@ export class Chaser extends Cradle {
   getIndex (): string;                   // esIndex || collection
 
   /* ---------- mapping 与字段清单 ---------- */
-  getMapping(): Record<string, any>;     // 入索引字段 -> ES mapping，含合并字段
+  getMapping(): Record<string, any>;     // 入索引字段 -> ES mapping，含合并字段与同步戳
   getSyncable(): Set<string>;            // 入索引字段名集合（含子文档点号路径）
   getTextable(): Set<string>;            // 并入全文的 textable 字段名集合
   getCountable(): Set<string>;           // 入索引 + countable 字段名集合
   getNestedPaths(): Set<string>;         // 声明了 nested 的字段路径集合
+  getSelectFalse(): Set<string>;         // select: false 且可同步的字段名集合
 
   /** 拼装全文内容，写入 esFullText 字段；默认按 getTextable() 取值拼接，子类可覆盖 */
   protected getFullText(doc: any): string;
+
+  /** doc -> ES 文档：按 mapping 裁剪字段、补全文字段与同步戳；子类可覆盖以物化派生字段 */
+  protected toEsDoc(doc: any): Record<string, any>;
 
   /* ---------- 直查 mongo：透传 Cradle 原实现 ---------- */
   rawSearch(params: SearchParams, ctx: Context): Promise<SearchResult>;
@@ -795,7 +799,7 @@ class UserChaser extends Chaser {
   - 启用后默认按 `_score` 倒序；若同时传 `sort`，`_score` 为**第一排序键**（`sort` 里写 `_score: 1` 可改为升序），其后才按其他字段；结果文档附带 `_score` 数值（不受 `cols` 限制）。
   - 不传任何打分标志时全部条件进 `filter`、不计分、也不返回 `_score`；仅 `Chaser.search` 读取，`Cradle` / `statis` 忽略。
 - **`$search`：字段级分词匹配**（mongo 社区版无此能力），符号对齐 mongo 的 `$text: { $search }`。仅 `textable: true` 的 String 可用，ES 侧翻译为 `match`（打 `.text` 子字段；`termsize: 0` 的纯 text 字段打主名），缺省不写 `operator`（沿用 ES `match` 默认的 `or`，任一词命中）；同级可用 `$searchLogic` 调整词间关系：`all` → `and`（须全部分词命中）、`any` → `or`，其他值抛 `PARAMS_INVALID`；`$searchBoost` 透传为 `boost` 加权（需配合 `mods` 的 `'score'` / `'score-all'` 才影响排序）。分词用字段自己的 `analyzer`，可与 `$and` / `$or` / `$not` 组合。如 `find: { body: { $search: 'hello world' } }` 命中 `hello` 或 `world` 其一即可，`find: { body: { $search: 'hello world', $searchLogic: 'all', $searchBoost: 2 } }` 则要求两者同时命中并加权；非 textable 字段或空串抛 `PARAMS_INVALID`。
-- 排序、分页（`start` / `limit`）、`mode` 模式（缺省仅 `list`，`list-total` 才返回 `total`）与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
+- 排序、分页（`start` / `limit`）、`mode` 模式（缺省仅 `list`，`list-total` 才返回 `total`，另附 ES 的 `totalRel`，即 `total.relation`）与 mongo 版一致；深翻页（`search_after`）不在范围内，`start + limit` 超出 ES `max_result_window`（默认 10000）直接报错。
 - **扁平模式的限制**：数组子文档未标 `nested: true` 时按 `object` 扁平索引，元素间的关联会丢失，跨字段的联合条件不保证落在同一元素。如 `find: { 'works.tag': 'a', 'works.qty': 9 }` 在扁平模式下会误命中「tag=a 与 qty=9 分属两个元素」的文档；要求同一元素同时满足时给该字段标 `nested: true`。
 - `nested` 字段：查询条件自动按 path 归组合并进同一个 nested query（保证同元素语义），排序自动带 `nested: { path }` 与 `mode`（升序 `min`、降序 `max`），`statis` 统计自动内嵌 `reverse_nested` 回到父文档计数。
 - 不加软删除条件：ES 里只有有效文档；「已伪删但 ES 尚未同步」的滞后命中由回 mongo 查询的软删除条件自然过滤（等同跳过）。
@@ -864,7 +868,7 @@ class MyChaser extends Chaser {
 - 调用侧无感：`search({ sort: { vFieldx: -1 } })`，可与真实字段混用，优先级即传入顺序。
 - `params` 是本次 `search` 的原始入参（含扩展字段），可用于按参数动态排序：`sort` 里的方向只是占位，实际取值从 `params` 读。如 `search({ sort: { loc: 1 }, loc: [116.4, 39.9] })` 可在重写里改为 `{ _geo_distance: { loc: params.loc, order: dir === -1 ? 'desc' : 'asc' } }`，升序即最近优先（字段须以 `geo_point` 入 mapping）。
 - 脚本引用的字段必须已入索引（`syncable` 非 false 且有 doc values）；虚拟字段名被剥离，不参与 `_leaves` 校验。
-- `_script` 逐文档计算、无法利用索引序，数据量大时建议物化：重写 `esDoc()` 算好加权值存成真实字段（mapping 同步声明），`getSort` 走普通排序。传了 `sort` 即不再按 `_score` 排，但 `_score` 仍并入返回文档。
+- `_script` 逐文档计算、无法利用索引序，数据量大时建议物化：重写 `toEsDoc()` 算好加权值存成真实字段（mapping 同步声明），`getSort` 走普通排序。传了 `sort` 即不再按 `_score` 排，但 `_score` 仍并入返回文档。
 
 ### 5.5 同步
 

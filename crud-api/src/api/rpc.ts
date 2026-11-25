@@ -1,5 +1,5 @@
 import type { Context as KoaContext } from 'koa';
-import type { Context } from 'hongs-crud';
+import type { Context as UsrContext } from 'hongs-crud';
 import { callFunc, CrudError } from 'hongs-crud';
 import { resolveContext } from '../funcs/auth';
 
@@ -27,7 +27,7 @@ function err(id: string | number | null, code: number, message: string, data?: a
   return { jsonrpc: '2.0', error: e, id };
 }
 
-async function dispatch(req: RpcRequest, ctx: Context): Promise<RpcResponse> {
+async function dispatch(req: RpcRequest, ctx: UsrContext): Promise<RpcResponse> {
   const id = req.id ?? null;
 
   if (typeof req.method !== 'string') {
@@ -64,14 +64,24 @@ export async function handleRpc(ctx: KoaContext): Promise<void> {
     return;
   }
 
-  const userCtx: Context = await resolveContext(ctx.request.headers.authorization);
-  userCtx.via = 'rpc';
+  let usrCtx: UsrContext;
+  try {
+    usrCtx = await resolveContext(ctx.request.headers.authorization);
+  } catch (e: any) {
+    // 身份解析失败（如 token 过期）按 JSON-RPC 错误返回，而非 HTTP 500
+    const id = Array.isArray(body) ? null : (body?.id ?? null);
+    ctx.body = e instanceof CrudError
+      ? err(id, e.code || -32603, e.message, e.data)
+      : err(id, -32603, e?.message || 'Internal error');
+    return;
+  }
+  usrCtx.via = 'rpc';
 
   if (Array.isArray(body)) {
     ctx.body = !body.length
       ? err(null, -32600, 'Invalid Request: empty batch')
-      : await Promise.all(body.map((r) => dispatch(r, userCtx)));
+      : await Promise.all(body.map((r) => dispatch(r, usrCtx)));
   } else {
-    ctx.body = await dispatch(body, userCtx);
+    ctx.body = await dispatch(body, usrCtx);
   }
 }

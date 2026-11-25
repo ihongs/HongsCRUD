@@ -10,8 +10,8 @@ if (! JWT_SECRET) {
   throw new Error('JWT_SECRET is required. Set it in environment or .env');
 }
 
-const REFRESH_TTL = Number(process.env.REFRESH_TTL) || 365 * 86400;  // 秒
-const ACCESS_TTL  = Number(process.env.ACCESS_TTL)  || 15 * 60;      // 秒
+export const ACCESS_TTL  = Number(process.env.ACCESS_TTL)  || 15 * 60;      // 秒
+export const REFRESH_TTL = Number(process.env.REFRESH_TTL) || 365 * 86400;  // 秒
 
 /* ---------- Base64url 工具 ---------- */
 
@@ -27,38 +27,39 @@ function base64urlDecode(str: string): Buffer {
 /* ---------- JWT (HS256, 手写) ---------- */
 
 export interface AccessPayload {
-  uid : string;
-  /** token 附加数据（签发时写入的 data，内容与用途由签发方自定） */
+  sub : string;
   data: Record<string, any>;
 }
 
 /**
  * 签发 access JWT。
- * data 为附加数据，有则写入 payload.data。
- * ttl 为有效期（秒）：缺省用 ACCESS_SEC，0 不限（不写 exp），>0 指定。
- * key 为签名密钥：缺省用于登录 token；上传 / SSE 等场景传各自的密钥。
+ * sub  主题或用户ID；
+ * data 为可选的附加数据；
+ * ttl  为有效期（秒）：缺省 ACCESS_TTL，-1 不限（不写 exp），>0 指定；
+ * key  为签名密钥：缺省用于登录 token；上传 / SSE 等场景传各自的密钥。
  */
 export function signAccess(
-  uid  : string,
+  sub  : string,
   data?: Record<string, any>,
   ttl  : number = ACCESS_TTL,
   key  : string = JWT_SECRET,
 ): string {
+  const ttlNum = ttl || ACCESS_TTL;
+  const secret = key || JWT_SECRET;
   const header = base64urlEncode(Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
   const nowSec = Math.floor(Date.now() / 1000);
-  const ttlNum = Number(ttl);
-  const claims: Record<string, any> = { sub: uid, iat: nowSec };
+  const claims: Record<string, any> = { sub, iat: nowSec };
 
-  // ttl 为 0 表示不限
-  if (ttlNum !== 0) {
-    claims.exp = nowSec + Math.floor(ttlNum);
+  // ttl 为 -1 表示不限
+  if (ttlNum !== -1) {
+    claims.exp = Math.floor( ttlNum ) + nowSec;
   }
   if (data && Object.keys(data).length > 0) {
     claims.data = data;
   }
 
   const pay = base64urlEncode(Buffer.from(JSON.stringify(claims)));
-  const sig = base64urlEncode(createHmac('sha256', key).update(`${header}.${pay}`).digest());
+  const sig = base64urlEncode(createHmac('sha256', secret).update(`${header}.${pay}`).digest());
   return `${header}.${pay}.${sig}`;
 }
 
@@ -70,12 +71,16 @@ export function signAccess(
  */
 export function readAccess(token?: string, secret: string = JWT_SECRET): AccessPayload | null {
   if (!token || !token.startsWith('eyJ')) return null;
-  return verifyAccess(token, secret);
+  return decodeAccess(token, secret).payload ?? null;
 }
 
-function verifyAccess(token: string, secret: string = JWT_SECRET): AccessPayload | null {
+/**
+ * 校验并解析：签名/结构无效返回 {}；签名有效但已过期返回 { expired: true }；否则返回 { payload }
+ * 仅供需要区分“过期”的调用方使用，readAccess 仍统一按无效处理
+ */
+function decodeAccess(token: string, secret: string): { payload?: AccessPayload; expired?: boolean } {
   const parts = token.split('.');
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3) return {};
 
   const [headerB64, payB64, sigB64] = parts;
 
@@ -86,18 +91,17 @@ function verifyAccess(token: string, secret: string = JWT_SECRET): AccessPayload
   // timingSafeEqual 要求等长；长度不等直接判失败
   const sigBuf = Buffer.from(sigB64);
   const expBuf = Buffer.from(expSig);
-  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return {};
 
-  // 解 payload 并验 exp
+  // 解 payload 并验 exp，无 exp 表示不限时（签发时 ttl=-1）
   try {
-    const payload = JSON.parse(base64urlDecode(payB64).toString());
-    // 无 exp 表示不限时（签发时 ttl=0）
-    if (payload.exp && payload.exp <= Math.floor(Date.now() / 1000)) return null;
-    if (!payload.sub) return null;
-    const data = payload.data && typeof payload.data === 'object' ? payload.data : {};
-    return { uid: payload.sub, data };
+    const pay = JSON.parse(base64urlDecode(payB64).toString());
+    if (!pay.sub) return {};
+    if (pay.exp && pay.exp <= Math.floor(Date.now() / 1000)) return { expired: true };
+    const dat = pay.data && typeof pay.data === 'object' ? pay.data : {};
+    return { payload: { sub: pay.sub, data: dat } };
   } catch {
-    return null;
+    return {};
   }
 }
 
@@ -142,10 +146,12 @@ export async function resolveContext(authHeader?: string): Promise<Context> {
 
   // eyJ... 前缀 → JWT
   if (token.startsWith('eyJ')) {
-    const res = verifyAccess(token);
-    if (res) {
-      ctx.uid = res.uid;
+    const res = decodeAccess(token, JWT_SECRET);
+    if (res.payload) {
+      ctx.uid = res.payload.sub;
       ctx.roles = await loadUserRoles(ctx.uid);
+    } else if (res.expired) {
+      throw new CrudError('Access token expired', CrudErrno.TOKEN_DECEASED, { reason: 'token_expired' });
     }
     return ctx;
   }

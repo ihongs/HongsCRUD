@@ -49,14 +49,14 @@ interface UploadTicket {
  * 这里不接受客户端额外传参。
  */
 function resolveUpload(ctx: Context): UploadTicket | null {
-  const raw     = ctx.query.token;
-  const token   = typeof raw === 'string' ? raw : '';
-  const payload = readAccess(token, UPLOAD_SECRET);
-  if (!payload) return null;
+  const raw  = ctx.query.token;
+  const tok  = typeof raw === 'string' ? raw : '';
+  const data = readAccess(tok, UPLOAD_SECRET);
+  if (! data) return null;
 
-  const key  = typeof payload.data.key === 'string' ? payload.data.key : '';
+  const key  = typeof data.data.key === 'string' ? data.data.key : '';
   const kind = kindOf(extOfKey(key));
-  if (!kind) return null;
+  if (! kind) return null;
 
   return { kind, key };
 }

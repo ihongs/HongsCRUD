@@ -961,9 +961,18 @@ export class Chaser extends Cradle {
         continue;
       }
       operations.push({ index: { _index: index, _id: id } });
-      operations.push(this.esDoc(doc));
+      operations.push(this.toEsDoc(doc));
     }
     return this.runBulk(operations, ids, opts);
+  }
+
+  /** doc -> ES 文档：按 mapping 树裁剪入索引字段，合并全文检索字段，补充同步同步时间 */
+  protected toEsDoc(doc: any): Record<string, any> {
+    const src = pickByMapping(this._mapping, doc,
+      new Set([this._esOpts.esFullText, this._esOpts.esSyncTime])) ?? {};
+    src[this._esOpts.esFullText] = this.getFullText(doc);
+    src[this._esOpts.esSyncTime] = new Date();
+    return src;
   }
 
   /** 提交 bulk 并逐项结算 SyncStat：失败的计入 errors（截断前 20 条）并按 esSyncError 告警 */
@@ -987,15 +996,6 @@ export class Chaser extends Cradle {
       if (it.delete) stat.deleted ++; else stat.indexed ++;
     });
     return stat;
-  }
-
-  /** doc -> ES 文档：按 mapping 树裁剪入索引字段，拼装合并字段，同步戳置为当前时间，见 2.2 */
-  private esDoc(doc: any): Record<string, any> {
-    const src = pickByMapping(this._mapping, doc,
-      new Set([this._esOpts.esFullText, this._esOpts.esSyncTime])) ?? {};
-    src[this._esOpts.esFullText] = this.getFullText(doc);
-    src[this._esOpts.esSyncTime] = new Date();
-    return src;
   }
 
   /* ---------- 查询同步：查 mongo 后转文档同步（见 5.2） ---------- */
