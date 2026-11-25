@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb';
 import {
+  regCrud,
   Crud,
   CrudError,
   CrudErrno,
@@ -12,8 +13,8 @@ import {
   StatisParams,
   StatisResult,
 } from 'hongs-crud';
-import { uploadDriver, kindOf, MAX_FILE_SIZE, type UploadCredential } from '../utils/upload';
 import { User, UserApiKey, genApiKey } from './user';
+import { uploadDriver, kindOf, MAX_FILE_SIZE, type UploadCredential } from '../utils/upload';
 
 /* ---------- 通用工具 ---------- */
 
@@ -189,3 +190,8 @@ export class MineApiKey extends UserApiKey implements Crud {
 }
 
 export const mineApiKey = new MineApiKey();
+
+export function regMineCruds() {
+  regCrud('mine', mine);
+  regCrud('mineApiKey', mineApiKey);
+}
