@@ -17,7 +17,7 @@ export class LocalUploadDriver implements UploadDriver {
   private readonly root: string;
 
   // 无参构造可用（对齐 KV 驱动惯例，便于 UPLOAD_DRIVER 动态加载）：自行读 UPLOAD_DIR
-  constructor(dir: string = process.env.UPLOAD_DIR || './static/upload') {
+  constructor(dir: string = process.env.UPLOAD_DIR || './data/www/upload') {
     this.root = resolve(dir);
   }
 

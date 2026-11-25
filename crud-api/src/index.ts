@@ -13,6 +13,7 @@ import { handleStatic } from './api/static';
 import { handleRest } from './api/rest';
 
 const PORT = Number(process.env.PORT) || 3000;
+const BASE_HREF = process.env.BASE_HREF || 'http://localhost:' + PORT;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/crud';
 
 // ES 客户端，辅助检索
@@ -65,11 +66,11 @@ async function main() {
   });
 
   app.listen(PORT, () => {
-    console.log(`[api] listening on http://localhost:${PORT}`);
-    console.log(`[api] POST /api/rpc  JSON RPC 2.0`);
-    console.log('[api] GET  /api/sse?token=...  SSE stream');
-    console.log('[api] PUT  /api/upload?token=...  raw upload');
-    console.log('[api] GET  /*  static files (static/)');
+    console.log(`[api] listening on ${BASE_HREF}` );
+    console.log('[api] POST /api/rpc JSON RPC 2.0');
+    console.log('[api] GET  /api/sse?token=... SSE stream');
+    console.log('[api] PUT  /api/upload?token=... raw upload');
+    console.log(`[api] GET  /* files in "${process.env.WWW_DIR || './data/www'}"`);
   });
 }
 
