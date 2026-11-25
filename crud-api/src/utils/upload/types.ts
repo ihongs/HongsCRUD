@@ -15,7 +15,7 @@ export const ALLOWED_EXTENSIONS: Record<string, string[]> = {
   image: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
   video: ['mp4', 'mov', 'm4v', 'avi', 'mkv', 'webm'],
   audio: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'],
-  file: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'rar'],
+  file: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', '7z', 'txt', 'csv', 'md'],
 };
 
 /** 大小上限（字节） */
