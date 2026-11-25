@@ -411,8 +411,8 @@ export class Chaser extends Cradle {
       return;
     }
 
-    if (value instanceof Date || typeof value !== 'object') {
-      push({ term: { [termName(leaf)]: value } }, false, true);
+    if (typeof value !== 'object' || value instanceof Date || isBsonScalar(value)) {
+      push({ term: { [termName(leaf)]: isBsonScalar(value) ? String(value) : value } }, false, true);
       return;
     }
 
@@ -544,7 +544,7 @@ export class Chaser extends Cradle {
       return;
     }
 
-    if (value instanceof Date || typeof value !== 'object') {
+    if (typeof value !== 'object' || value instanceof Date || isBsonScalar(value)) {
       push(ids([value]), true);   // ObjectId / 字符串 / 数字等直接当等值；日期将错就错，与 fieldConds 一致
       return;
     }
@@ -1459,4 +1459,9 @@ function isPlainObj(v: any): boolean {
 /** 是否空的对象（排除 null / Date / 数组）（即无键值对） */
 function isEmptyObj(v: any): boolean {
   return isPlainObj(v) && Object.keys(v).length === 0;
+}
+
+/** 是否 BSON 标量（ObjectId / Decimal128 / Long / Binary 等）：虽是对象，但应作为单值处理 */
+function isBsonScalar(v: any): boolean {
+  return typeof v?._bsontype === 'string';
 }
