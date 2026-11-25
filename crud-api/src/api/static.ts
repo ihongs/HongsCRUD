@@ -4,15 +4,17 @@ import { resolve, sep } from 'path';
 import type { Context } from 'koa';
 import { STATIC_MIME } from '../types/mimeTypes';
 
-/** 静态资源目录：非 /api 请求默认从这里取文件（上传文件默认落在 static/upload） */
-const STATIC_ROOT = resolve('./static');
+/**
+ * 网站根目录
+ */
+const WWW_DIR = resolve(process.env.WWW_DIR || './data/www');
 
 /**
  * SPA 子应用：SPA_URIS 如 /app1,/app2，规范为 /app1/ /app2/ 前缀；
  * 其下路径的文件、目录不存在时回落到该子应用的 index.html，未配置则不兜底（交给 nginx 等外部处理）
  */
 const SPA_URIS = [...new Set(String(process.env.SPA_URIS || '')
-  .split(',')
+  .split (',')
   .map(s => s.trim().replace(/^\/+|\/+$/g, ''))
   .filter(Boolean)
   .map(s => `/${s}/`))];
@@ -51,9 +53,9 @@ export async function handleStatic(ctx: Context): Promise<void> {
     return;
   }
 
-  let target = resolve(STATIC_ROOT, '.' + pathname);
-  // 防路径穿越：必须落在 STATIC_ROOT 内
-  if (target !== STATIC_ROOT && !target.startsWith(STATIC_ROOT + sep)) {
+  let target = resolve(WWW_DIR, '.' + pathname);
+  // 防路径穿越：必须落在 WWW_DIR 内
+  if (target !== WWW_DIR && !target.startsWith(WWW_DIR + sep)) {
     ctx.status = 404;
     return;
   }
@@ -63,7 +65,7 @@ export async function handleStatic(ctx: Context): Promise<void> {
     // SPA 兜底：路径落在 SPA_URIS 子应用内时，交给该子应用的 index.html 处理前端路由
     const app = SPA_URIS.find(p => pathname === p.slice(0, -1) || pathname.startsWith(p));
     if (app) {
-      found = await statTarget(resolve(STATIC_ROOT, '.' + app + 'index.html'));
+      found = await statTarget(resolve(WWW_DIR, '.' + app + 'index.html'));
     }
   }
   if (!found) {
