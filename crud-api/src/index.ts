@@ -10,9 +10,10 @@ import { handleRpc } from './api/rpc';
 import { handleSSE } from './api/sse';
 import { handleUpload } from './api/upload';
 import { handleStatic } from './api/static';
+import { handleRest } from './api/rest';
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/crud';
 const PORT = Number(process.env.PORT) || 3000;
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/crud';
 
 // 确保 JWT_SECRET 在启动时已设置（auth.ts 会再次校验）
 void process.env.JWT_SECRET;
@@ -46,6 +47,11 @@ async function main() {
     // 独立上传接口，token 走 url 参数，scene 在许可里，启用云存储则不用此接口
     if (ctx.path === '/api/upload') {
       await handleUpload(ctx);
+      return;
+    }
+
+    // 其他处理过程
+    if (await handleRest(ctx)) {
       return;
     }
 
