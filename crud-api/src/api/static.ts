@@ -34,8 +34,8 @@ async function statTarget(target: string): Promise<{ target: string; size: numbe
 }
 
 /**
- * 默认静态行为：把非 /api 的 GET/HEAD 请求映射到 static 目录。
- * 流式发送（不整文件读入内存），防路径穿越，目录请求回落到 index.html。
+ * 默认静态行为：GET/HEAD 请求映射到网站目录（默认 ./data/www）。
+ * 流式发送（不整文件读入内存），防路径穿越，目录请求到 index.html。
  */
 export async function handleStatic(ctx: Context): Promise<void> {
   if (ctx.method !== 'GET' && ctx.method !== 'HEAD') {
