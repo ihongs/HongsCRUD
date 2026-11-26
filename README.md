@@ -1,7 +1,5 @@
 # HongsCRUD
 
-**Homogeneous Operational Rule Data Ensemble** · Hong's Operational Rule Data Ensemble
-
 一套基于 **TypeScript** 与 **Mongoose** 构建的规则数据集成与管理平台。围绕三条主线展开：
 
 1. **简化 CRUD** —— 标准化的 `search` / `create` / `update` / `delete` 能力，以及 `statis` / `upsert` / `schema` 补充；同一套 MongoDB 查询语法可无缝衔接 ElasticSearch，增强检索、排序与统计能力。
