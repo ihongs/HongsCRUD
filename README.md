@@ -4,18 +4,18 @@
 
 一套基于 **TypeScript** 与 **Mongoose** 构建的规则数据集成与管理平台。围绕三条主线展开：
 
-1. **简化 CRUD** —— 通过 `Cradle` 类与统一注册器，一行注册即获得标准化的 `search` / `create` / `update` / `delete` / `statis` / `upsert` / `schema` 能力；同一套 MongoDB 查询语法可无缝衔接 ElasticSearch。
-2. **权限细分可控** —— `callFunc` 调度入口配合 `Role` 角色映射、`callable` 白名单、`isPermitted` 权限校验，三层防线把控外部调用。
-3. **暴露数据结构** —— `schema` 方法自省 Mongoose Schema，输出结构化的字段、枚举、关联描述，供前端表单、文档生成，亦可供 AI Agent 消费。
+1. **简化 CRUD** —— 通过 `Cradle` 类与统一注册器，一行注册即获得标准化的 `search` / `create` / `update` / `delete` / `statis` / `upsert` / `schema` 能力；同一套 MongoDB 查询语法可无缝衔接 ElasticSearch，增强检索、排序与统计能力。
+2. **数据结构自省** —— `schema` 方法整理 Mongoose Schema，输出结构化的字段、枚举、关联描述，供前端表单、文档生成，亦可供 AI Agent 消费。
+3. **权限简单可控** —— 全接口强制角色权限校验 + `isPermitted` 内部补充校验，多层防线把控外部调用。
 
-> 核心机制详见 [crud/README.md](./crud/README.md)，ElasticSearch 支持详见第 4 节。
+> 核心机制详见 [crud/README.md](./crud/README.md)，ElasticSearch 支持详见其第 5 节。
 
 ## 技术栈
 
 - **基础语言**：[TypeScript](https://www.typescriptlang.org/)
 - **数据建模**：[Mongoose](https://mongoosejs.com/) `^8.0.0`
 - **服务框架**：[Koa](https://koajs.com/) `^2.15.0`（含 `koa-bodyparser`）
-- **接口协议**：JSON-RPC 2.0（MCP 适配规划中）
+- **接口协议**：JSON-RPC 2.0
 
 ## 目录结构
 
