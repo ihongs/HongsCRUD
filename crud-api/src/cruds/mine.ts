@@ -14,7 +14,7 @@ import {
   StatisResult,
 } from 'hongs-crud';
 import { User, UserApiKey, genApiKey } from './user';
-import { uploadDriver, kindOf, MAX_FILE_SIZE, type UploadCredential } from '../utils/upload';
+import { uploadDriver, storeKeyById, extOfKey, kindOf, sizeOf, type UploadCredential } from '../utils/upload';
 
 /* ---------- 通用工具 ---------- */
 
@@ -92,18 +92,19 @@ export class Mine extends User implements Crud {
     const uid  = requireUid(ctx, 'mine.upload');
     const name = String(params?.name || '');
     const size = Number(params?.size) || 0;
-    const ext  = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    const ext  = extOfKey(name);
     const kind = kindOf(ext);
+    const max  = sizeOf('avatar'); // 尺寸限制不同于一般图片
+    const key  = storeKeyById('avatar', uid, ext);  // 同一用户固定路径，换头像即覆盖旧文件
 
     if (kind !== 'image') {
-      throw new CrudError(`Unsupported avatar type: .${ext}`, CrudErrno.PARAMS_INVALID, { reason: 'bad_extension' });
+      throw new CrudError(`Unsupported image type: .${ext}`, CrudErrno.PARAMS_INVALID, { reason: 'bad_extension' });
     }
-    const maxSize = MAX_FILE_SIZE['avatar']; // 尺寸限制不同于一般图片
-    if (size > maxSize) {
-      throw new CrudError(`File too large, max ${Math.round(maxSize / 1024 / 1024)}MB`, CrudErrno.PARAMS_INVALID, { reason: 'too_large' });
+    if (size > max) {
+      throw new CrudError(`File too large, max ${Math.round(max / 1024 / 1024)}MB`, CrudErrno.PARAMS_INVALID, { reason: 'too_large' });
     }
 
-    return uploadDriver.issue({ scene: 'avatar', ext });
+    return uploadDriver.issue({ key, maxSize: max });
   }
 }
 

@@ -1,5 +1,6 @@
 import { resolve } from 'path';
 import { LocalUploadDriver } from './drivers/local';
+import { LocalToUploadDriver } from './drivers/local-to';
 import type { UploadDriver } from './types';
 
 export * from './types';
@@ -16,7 +17,8 @@ export const UPLOAD_TMP = resolve(process.env.UPLOAD_TMP || './data/tmp');
 
 // 上传驱动：未配置 UPLOAD_DRIVER 时用内置本地驱动；替换云存储时设 UPLOAD_DRIVER 指向驱动模块。
 // 值为模块（取其默认导出为驱动类，无参构造，驱动类自行读环境变量配置，惯例同 KV_ROSTER）；
-// 模块以 './' '../' 开头时相对运行目录解析，其余按包名。
+// 短名（s3 / oss）取 drivers 目录下的内置驱动，'./' '../' 开头相对运行目录，其余按包名。
+// 另有 local-to-<短名> 形式：上传先落到本服务 /api/upload（可强制校验大小），再 store 到云存储。
 // 前端只面对统一的 RPC 上传指令信封，切换存储前端零改动。
 
 export const uploadDriver: UploadDriver = createDriver();
@@ -27,7 +29,20 @@ function createDriver(): UploadDriver {
     return new LocalUploadDriver(UPLOAD_DIR);
   }
 
-  const spec = conf.startsWith('./') || conf.startsWith('../') ? resolve(conf) : conf;
+  // local-to-xxx：本地中转，issue 走本地（/api/upload），store 交给 xxx 驱动推到云
+  const m = /(?:^|\/)local-to-([a-z0-9_-]+)$/i.exec(conf);
+  if (m) {
+    return new LocalToUploadDriver(loadDriver(m[1]));
+  }
+  return loadDriver(conf);
+}
+
+/** 加载驱动：短名取 drivers 目录下的内置实现，其余按模块路径 */
+function loadDriver(conf: string): UploadDriver {
+  const spec = /^[a-z0-9_-]+$/i.test(conf)
+    ? `./drivers/${conf}`
+    : conf.startsWith('./') || conf.startsWith('../') ? resolve(conf) : conf;
+
   let Ctor: any;
   try {
     Ctor = require(spec)?.default;

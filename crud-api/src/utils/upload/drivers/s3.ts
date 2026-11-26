@@ -5,7 +5,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type {
   UploadCredential, UploadDriver, UploadStoreParams, UploadIssueParams,
 } from '../types';
-import { extOfKey, mimeOf, storeKey } from '../types';
+import { extOfKey, mimeOf } from '../types';
 
 /** 上传指令有效期（秒）：取 CHALLENGE_TTL（默认 120s） */
 const CREDENTIAL_TTL = Number(process.env.CHALLENGE_TTL) || 120;
@@ -25,8 +25,8 @@ function required(name: string): string {
  *
  * 依赖（peerDependencies，按需安装）：@aws-sdk/client-s3、@aws-sdk/s3-request-presigner
  * 环境变量：
- *   S3_BUCKET（必填） / S3_REGION（默认 AWS_REGION 或 us-east-1）
  *   S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY（可选 S3_SESSION_TOKEN；都不配时走 SDK 默认凭据链）
+ *   S3_BUCKET（必填） / S3_REGION（默认 AWS_REGION 或 us-east-1）
  *   S3_ENDPOINT（可选，S3 兼容存储填其 S3 协议 endpoint）
  *   S3_FORCE_PATH_STYLE（可选，'true' 时使用 {endpoint}/{bucket}/{key} 路径风格）
  *   S3_PUBLIC_BASE_URL（可选，如 https://cdn.example.com）
@@ -64,23 +64,24 @@ export class S3UploadDriver implements UploadDriver {
     });
   }
 
-  async issue({ scene, ext }: UploadIssueParams): Promise<UploadCredential> {
-    const key         = storeKey(scene, ext);
-    const contentType = mimeOf(ext);
+  async issue({ key, ttl }: UploadIssueParams): Promise<UploadCredential> {
+    const contentType = mimeOf(extOfKey(key));
+    const expiresIn = ttl || CREDENTIAL_TTL;
+    const accessUrl = this.accessUrl(key);
 
     // 预签名只签 host；Content-Type 通过信封下发给前端，确保对象以正确的类型存储
     const url = await getSignedUrl(
       this.client,
       new PutObjectCommand({ Bucket: this.bucket, Key: key, ContentType: contentType }),
-      { expiresIn: CREDENTIAL_TTL },
+      { expiresIn },
     );
 
     return {
       url,
-      method   : 'PUT',
-      headers  : { 'Content-Type': contentType },
-      expiresIn: CREDENTIAL_TTL,
-      accessUrl: this.publicUrl(key),
+      method: 'PUT',
+      headers: { 'Content-Type': contentType },
+      expiresIn,
+      accessUrl,
     };
   }
 
@@ -94,10 +95,10 @@ export class S3UploadDriver implements UploadDriver {
       ContentType  : mimeOf (extOfKey(key)),
       ContentLength: size,
     }));
-    return this.publicUrl(key);
+    return this.accessUrl(key);
   }
 
-  private publicUrl(key: string): string {
+  accessUrl(key: string): string {
     if (this.publicBase) return `${this.publicBase}/${key}`;
 
     const u = new URL(this.endpoint || `https://s3.${this.region}.amazonaws.com`);

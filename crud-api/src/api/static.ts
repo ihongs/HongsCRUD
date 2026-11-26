@@ -20,14 +20,14 @@ const SPA_URIS = [...new Set(String(process.env.SPA_URIS || '')
   .map(s => `/${s}/`))];
 
 /** 目标文件状态：目录回落到其 index.html；不存在或不是文件返回 null（target 随目录回落更新） */
-async function statTarget(target: string): Promise<{ target: string; size: number } | null> {
+async function statTarget(target: string): Promise<{ target: string; size: number; mtimeMs: number } | null> {
   try {
     let st = await stat(target);
     if (st.isDirectory()) {
       target = resolve(target, 'index.html');
       st = await stat(target);
     }
-    return st.isFile() ? { target, size: st.size } : null;
+    return st.isFile() ? { target, size: st.size, mtimeMs: st.mtimeMs } : null;
   } catch {
     return null;
   }
@@ -76,16 +76,18 @@ export async function handleStatic(ctx: Context): Promise<void> {
 
   const ext = target.toLowerCase().substring(target.lastIndexOf('.') + 1);
   ctx.set('Content-Type', STATIC_MIME[ext] || 'application/octet-stream');
-  ctx.set('Content-Length', String(found.size));
   ctx.set('X-Content-Type-Options', 'nosniff');
-  if (pathname.startsWith('/upload/')) {
-    // 上传目录文件名不可变，可长缓存
-    ctx.set('Cache-Control', 'public, max-age=31536000, immutable');
-  } else {
-    // 其他静态资源缓存 12 小时
-    ctx.set('Cache-Control', 'public, max-age=43200');
+
+  // 开发期用协商缓存：允许缓存但每次带 If-None-Match 回源校验；线上由 nginx 对 /upload 等单独配置
+  const etag = `W/"${found.size}-${Math.floor(found.mtimeMs / 1000)}"`;
+  ctx.set('Cache-Control', 'no-cache');
+  ctx.set('ETag', etag);
+  if (ctx.get('if-none-match') === etag) {
+    ctx.status = 304;
+    return;
   }
 
+  ctx.set('Content-Length', String(found.size));
   if (ctx.method === 'HEAD') {
     ctx.status = 200;
     return;

@@ -2,7 +2,7 @@ import OSS from 'ali-oss';
 import type {
   UploadCredential, UploadDriver, UploadStoreParams, UploadIssueParams,
 } from '../types';
-import { extOfKey, mimeOf, storeKey } from '../types';
+import { extOfKey, mimeOf } from '../types';
 
 /** 上传指令有效期（秒）：取 CHALLENGE_TTL（默认 120s） */
 const CREDENTIAL_TTL = Number(process.env.CHALLENGE_TTL) || 120;
@@ -22,8 +22,8 @@ function required(name: string): string {
  *
  * 依赖（peerDependencies，按需安装）：ali-oss
  * 环境变量：
- *   OSS_BUCKET（必填） / OSS_REGION（默认 oss-cn-hangzhou）
  *   OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET（必填；可选 OSS_STS_TOKEN）
+ *   OSS_BUCKET（必填） / OSS_REGION（默认 oss-cn-hangzhou）
  *   OSS_ENDPOINT（可选，如 oss-cn-hangzhou.aliyuncs.com 或自定义域名）
  *   OSS_CNAME（可选，'true' 表示 OSS_ENDPOINT 是绑定到 Bucket 的自定义域名）
  *   OSS_SECURE（可选，'false' 时使用 http，默认 https）
@@ -58,33 +58,34 @@ export class OssUploadDriver implements UploadDriver {
     });
   }
 
-  async issue({ scene, ext }: UploadIssueParams): Promise<UploadCredential> {
-    const key         = storeKey(scene, ext);
-    const contentType = mimeOf(ext);
+  async issue({ key, ttl }: UploadIssueParams): Promise<UploadCredential> {
+    const contentType = mimeOf(extOfKey(key));
+    const expiresIn = ttl || CREDENTIAL_TTL;
+    const accessUrl = this.accessUrl(key);
 
     // Content-Type 会签进 URL：前端 PUT 时必须原样携带该头，否则签名校验失败
     const url = this.client.signatureUrl(key, {
       method: 'PUT',
-      expires: CREDENTIAL_TTL,
+      expires: expiresIn,
       'Content-Type': contentType,
     });
 
     return {
       url,
-      method   : 'PUT',
-      headers  : { 'Content-Type': contentType },
-      expiresIn: CREDENTIAL_TTL,
-      accessUrl: this.publicUrl(key),
+      method: 'PUT',
+      headers: { 'Content-Type': contentType },
+      expiresIn,
+      accessUrl,
     };
   }
 
   /** 服务端本地文件入库：ali-oss 按文件路径上传，超过分片阈值时自动分片 */
   async store({ path, key }: UploadStoreParams): Promise<string> {
     await this.client.put(key, path, { mime: mimeOf(extOfKey(key)) });
-    return this.publicUrl(key);
+    return this.accessUrl(key);
   }
 
-  private publicUrl(key: string): string {
+  accessUrl(key: string): string {
     if (this.publicBase) return `${this.publicBase}/${key}`;
 
     if (this.endpoint) {

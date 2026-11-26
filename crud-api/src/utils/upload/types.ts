@@ -28,6 +28,11 @@ export const ALLOWED_KINDS: Record<string, string[]> = {
   file : ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'txt', 'md', 'zip', 'rar', '7z'],
 };
 
+/** 取归类对应的大小上限（字节），对应类型未设则返回 0（可能会导致无法上传） */
+export function sizeOf(kind: string): number {
+  return MAX_FILE_SIZE[kind] || 0;
+}
+
 /** 扩展名白名单检查：返回归类（image/video/audio/file），非法返回 null */
 export function kindOf(ext: string): string | null {
   if (ALLOWED_KINDS.image.includes(ext)) return 'image';
@@ -48,7 +53,7 @@ export function extOfKey(key: string): string {
   return i < 0 ? '' : key.slice(i + 1).toLowerCase();
 }
 
-/** 生成存储键：{scene}/{yyyy/mm/dd}/{uuid}.{ext}（本地与云驱动共用，也是对外访问路径） */
+/** 生成存储键：{scene}/{yyyy/mm/dd}/{uuid}.{ext}（供调用方按需使用，也是对外访问路径） */
 export function storeKey(scene: string, ext: string): string {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '/');
   const name = `${randomUUID()}.${ext}`;
@@ -56,16 +61,31 @@ export function storeKey(scene: string, ext: string): string {
 }
 
 /**
- * 上传指令（前端信封）：前端照 url + method + headers 发送文件即可，存储位置由后端驱动决定。
+ * 按对象 id 生成稳定存储键：{scene}/{oid 尾2}/{oid 尾3-4}/{oid}.{ext}
+ * 同对象 id 落到相同的路径，上传即覆盖旧文件，适合头像等只保留最新一份的场景；
+ * 需要保留历史版本的不要用它。
+ */
+export function storeKeyById(scene: string, oid: string, ext: string): string {
+  const name = String(oid);
+  const last = name.slice(-2).padStart(2, '_');       // 尾 2 位
+  const tail = name.slice(-4, -2).padStart(2, '_');   // 尾 3-4 位（不足补 _）
+  return `${scene}/${last}/${tail}/${name}.${ext}`;
+}
+
+/**
+ * 上传指令（前端信封）：前端照 url + method 发送文件即可，存储位置由后端驱动决定。
+ * PUT：裸流发送，headers 原样带上；POST：multipart/form-data，先追加 fields，文件字段名 file。
  * url 可能是相对路径（本服务端 /api/upload?token=...）或绝对地址（云存储预签名），
- * 前端用 new URL(url, location.href) 统一处理即可；两者都是裸流 PUT。
+ * 前端用 new URL(url, location.href) 统一处理即可。
  */
 export interface UploadCredential {
   /** 文件发往地址 */
   url       : string;
   /** 发送方法 */
-  method    : 'PUT';
-  /** 发送时要附带的请求头 */
+  method    : 'PUT' | 'POST';
+  /** POST 时随文件提交的表单字段（key / 签名 / 策略等），文件本身由前端追加为 file */
+  fields?   : Record<string, string>;
+  /** PUT 时需要附带的请求头 */
   headers?  : Record<string, string>;
   /** 指令有效期（秒） */
   expiresIn : number;
@@ -73,19 +93,22 @@ export interface UploadCredential {
   accessUrl : string;
 }
 
-/** 签发上传指令的入参（调用方已完成 scene/ext 校验） */
+/** 签发上传指令（调用前已完成校验） */
 export interface UploadIssueParams {
-  /** 场景（子目录名），由签发方固定，如 mine.upload 用 avatar */
-  scene: string;
-  ext  : string;
+  /** 存储键，由调用方指定（可先用 storeKey(scene, ext) 生成） */
+  key : string;
+  /** 指令有效期（秒） */
+  ttl?: number;
+  /** 大小上限（字节），可选；本地/中转在服务端强制执行，云存储直传时改走 POST 策略 */
+  maxSize?: number;
 }
 
-/** 存储入参：文件已写入临时文件，等待驱动落盘/中转。key 决定最终位置，ext/大小均从 key 与文件本身得出 */
+/** 本地临时文件转入目标位置或云存储 */
 export interface UploadStoreParams {
+  /** 存储键，由调用方指定（可先用 storeKey(scene, ext) 生成） */
+  key  : string;
   /** 本地临时文件路径 */
   path : string;
-  /** 存储键，由 storeKey(scene, ext) 生成 */
-  key  : string;
 }
 
 /**
@@ -97,4 +120,6 @@ export interface UploadDriver {
   issue(params: UploadIssueParams): Promise<UploadCredential>;
   /** 服务端本地文件的存储（本地落盘/推云），位置由 key 指定；直传流程不经过它 */
   store(params: UploadStoreParams): Promise<string>;
+  /** 对象访问地址：中转驱动据此改写 accessUrl */
+  accessUrl?(key: string): string;
 }
