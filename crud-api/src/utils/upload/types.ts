@@ -1,6 +1,6 @@
 /* 上传类型与场景 */
 
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { UPLOAD_MIME } from '../../types/mimeTypes';
 
 /** 上传 token 独立签名密钥：未配置时由 JWT_SECRET 派生，避免与登录 token 互通 */
@@ -61,15 +61,14 @@ export function storeKey(scene: string, ext: string): string {
 }
 
 /**
- * 按对象 id 生成稳定存储键：{scene}/{oid 尾2}/{oid 尾3-4}/{oid}.{ext}
- * 同对象 id 落到相同的路径，上传即覆盖旧文件，适合头像等只保留最新一份的场景；
+ * 按对象 id 生成稳定存储键：{scene}/{hash 0-2}/{hash 3-4}/{hash}.{ext}（hash = md5(id)）
+ * 同对象 id 落到相同的路径，上传覆盖旧文件，适合头像等只保留最新一份的场景；
+ * ObjectId / UUID / 自增 ID 都能均匀分布，不会把 id 暴露在 URL 里。
  * 需要保留历史版本的不要用它。
  */
 export function storeKeyById(scene: string, oid: string, ext: string): string {
-  const name = String(oid);
-  const last = name.slice(-2).padStart(2, '_');       // 尾 2 位
-  const tail = name.slice(-4, -2).padStart(2, '_');   // 尾 3-4 位（不足补 _）
-  return `${scene}/${last}/${tail}/${name}.${ext}`;
+  const hash = createHash('md5').update(String(oid)).digest('hex');
+  return `${scene}/${hash.slice(0, 2)}/${hash.slice(2, 4)}/${hash}.${ext}`;
 }
 
 /**
