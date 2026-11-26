@@ -29,11 +29,11 @@ export class LocalUploadDriver implements UploadDriver {
    * 本地模式：对齐云存储预签名 URL 的用法，许可 token 在驱动内签发（云存储不需要）并放在 url 查询参数里，
    * 前端直接把文件 PUT 到这个 url 即可（存储键 key 由调用方指定并写入 token 的 sub）。
    */
-  async issue({ key, ttl, maxSize }: UploadIssueParams): Promise<UploadCredential> {
+  async issue({ key, ttl, max }: UploadIssueParams): Promise<UploadCredential> {
     const accessUrl = this.accessUrl(key);
     const expiresIn = ttl || CREDENTIAL_TTL;
     // 大小上限写入 token，由 /api/upload 在流式接收时强制校验
-    const data = maxSize && maxSize > 0 ? { max: maxSize } : undefined;
+    const data  = max && max > 0 ? { max } : undefined;
     const token = signAccess(key, data, expiresIn, UPLOAD_SECRET);
     return {
       url      : `/api/upload?token=${encodeURIComponent(token)}`,

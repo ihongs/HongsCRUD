@@ -99,8 +99,8 @@ export interface UploadIssueParams {
   key : string;
   /** 指令有效期（秒） */
   ttl?: number;
-  /** 大小上限（字节），可选；本地/中转在服务端强制执行，云存储直传时改走 POST 策略 */
-  maxSize?: number;
+  /** 大小上限（字节） */
+  max?: number;
 }
 
 /** 本地临时文件转入目标位置或云存储 */

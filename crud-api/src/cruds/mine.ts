@@ -90,8 +90,8 @@ export class Mine extends User implements Crud {
 
   upload(params: any, ctx: Context): Promise<UploadCredential> {
     const uid  = requireUid(ctx, 'mine.upload');
-    const name = String(params?.name || '');
-    const size = Number(params?.size) || 0;
+    const name = String(params?.fileName || '');
+    const size = Number(params?.fileSize) || 0 ;
     const ext  = extOfKey(name);
     const kind = kindOf(ext);
     const max  = sizeOf('avatar'); // 尺寸限制不同于一般图片
@@ -104,7 +104,7 @@ export class Mine extends User implements Crud {
       throw new CrudError(`File too large, max ${Math.round(max / 1024 / 1024)}MB`, CrudErrno.PARAMS_INVALID, { reason: 'too_large' });
     }
 
-    return uploadDriver.issue({ key, maxSize: max });
+    return uploadDriver.issue({ key, max });
   }
 }
 

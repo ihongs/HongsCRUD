@@ -11,8 +11,8 @@ interface UploadConfig {
 /** mine.upload 申请头像上传，按信封的 method 发送（PUT 裸流 / POST 表单），返回可访问地址 */
 export async function uploadFile(file: File): Promise<string> {
   const cfg = await rpc<UploadConfig>('mine.upload', {
-    name: file.name,
-    size: file.size,
+    fileName: file.name,
+    fileSize: file.size,
   });
 
   let resp: Response;
