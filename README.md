@@ -4,7 +4,7 @@
 
 一套基于 **TypeScript** 与 **Mongoose** 构建的规则数据集成与管理平台。围绕三条主线展开：
 
-1. **简化 CRUD** —— 通过 `Cradle` 类与统一注册器，一行注册即获得标准化的 `search` / `create` / `update` / `delete` / `statis` / `upsert` / `schema` 能力；同一套 MongoDB 查询语法可无缝衔接 ElasticSearch，增强检索、排序与统计能力。
+1. **简化 CRUD** —— 标准化的 `search` / `create` / `update` / `delete` 能力，以及 `statis` / `upsert` / `schema` 补充；同一套 MongoDB 查询语法可无缝衔接 ElasticSearch，增强检索、排序与统计能力。
 2. **数据结构自省** —— `schema` 方法整理 Mongoose Schema，输出结构化的字段、枚举、关联描述，供前端表单、文档生成，亦可供 AI Agent 消费。
 3. **权限简单可控** —— 全接口强制角色权限校验 + `isPermitted` 内部补充校验，多层防线把控外部调用。
 
