@@ -1,12 +1,14 @@
 import { regRole } from 'hongs-crud';
 
+export const REFRESH_PERMITS = ['auth.refresh', 'auth.chall', 'auth.login', 'auth.logout'];
+
 export function regRoles(): void {
-  // 匿名角色：未登录的用户
+  // 匿名角色：放行登录类方法及其他开放方法
   regRole('anon', [
-    'auth.chall', 'auth.login', 'auth.logout', 'auth.refresh',
+    ...REFRESH_PERMITS,
   ]);
 
-  // 普通用户：已登录的一般用户
+  // 普通用户：放行自身维护类及其他许可方法
   regRole('user', [
     'guest',
     'auth.chall', 'auth.logout', 'auth.refresh', 'auth.permits', 'mine.upload',

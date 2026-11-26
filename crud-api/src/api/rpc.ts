@@ -1,7 +1,8 @@
 import type { Context as KoaContext } from 'koa';
 import type { Context as UsrContext } from 'hongs-crud';
-import { callFunc, CrudError } from 'hongs-crud';
+import { callFunc, CrudError, CrudErrno } from 'hongs-crud';
 import { resolveContext } from '../funcs/auth';
+import { REFRESH_PERMITS } from '../roles';
 
 interface RpcRequest {
   jsonrpc?: string;
@@ -68,12 +69,19 @@ export async function handleRpc(ctx: KoaContext): Promise<void> {
   try {
     usrCtx = await resolveContext(ctx.request.headers.authorization);
   } catch (e: any) {
-    // 身份解析失败（如 token 过期）按 JSON-RPC 错误返回，而非 HTTP 500
-    const id = Array.isArray(body) ? null : (body?.id ?? null);
-    ctx.body = e instanceof CrudError
-      ? err(id, e.code || -32603, e.message, e.data)
-      : err(id, -32603, e?.message || 'Internal error');
-    return;
+    const id      = ! Array.isArray(body) ? (body?.id ?? null) : null;
+    const method  = ! Array.isArray(body) ? (body?.method ?? '') : '';
+    // access token 过期：续期/登录类方法需放行，其他照常返回 TOKEN_DECEASED 让客户端刷新
+    const expired = e instanceof CrudError && e.code === CrudErrno.TOKEN_DECEASED;
+    if (expired && REFRESH_PERMITS.includes(method)) {
+      usrCtx = {};
+    } else {
+      // 身份解析失败（如 token 过期）按 JSON-RPC 错误返回，而非 HTTP 500
+      ctx.body = e instanceof CrudError
+        ? err(id, e.code || -32603, e.message, e.data)
+        : err(id, -32603, e?.message || 'Internal error');
+      return;
+    }
   }
   usrCtx.via = 'rpc';
 
