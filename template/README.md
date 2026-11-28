@@ -2,9 +2,9 @@
 
 极简 Jinja 风格模板引擎，表达式直接使用 JavaScript 语法。
 
-> **安全假设：模板、数据以及数据里的函数都必须由开发者维护、可信。**
+> **注意：模板、数据以及数据里的函数均需由开发者维护，视为安全可信。**
 >
-> 本引擎不做沙箱：表达式通过 `new Function` 执行，模板作者可以执行任意 JS。它面向**内部报告生成**、**LLM prompt 模板渲染**等可信场景，不要用于渲染终端用户提交的模板。
+> 本引擎不做沙箱：表达式通过 `new Function` 执行，模板作者可以执行任意 JS。用于**LLM prompt 模板渲染**、**报告生成**等内部可信场景，不要用于渲染终端用户提交的模板。
 
 - `{{ expr }}` 输出、`{% if / for / set / include %}` 指令、`{# 注释 #}`
 - 表达式在编译期用 `new Function` 预编译，`render` 只执行不再解析
@@ -61,7 +61,7 @@ tpl.render({ title: 'Hi' });
 ```
 
 表达式是标准 JS，可选链、`??`、模板字面量、正则、箭头函数都可用。
-建议用 `?.` 处理可能缺失的路径；未声明的顶层标识符返回 `undefined`，不会抛 `ReferenceError`。
+强烈建议用 `?.` 处理可能缺失的路径；未声明的顶层标识符返回 `undefined`，不会抛 `ReferenceError`。
 
 ### 条件
 
@@ -87,9 +87,17 @@ tpl.render({ title: 'Hi' });
 {% endfor %}
 ```
 
-- 数组 / 字符串 / `Set` / 可迭代对象：逐项
-- `Map` / 普通对象：`[key, value]` 元组，写 `{{ entry[0] }}` / `{{ entry[1] }}`
-- `null` / `undefined` 视为空；非可迭代值抛 `TemplateError`
+对象/映射解包：
+
+```jinja
+{% for key in obj %}{{ key }}={{ obj[key] }}{% endfor %}
+{% for key, val in obj %}{{ key }}={{ val }}{% endfor %}
+```
+
+- `Set` / 数组 / 迭代对象 / 字符串 ：`for item in value` 逐项遍历
+- `Map` / 普通对象 ：`for k in obj` 取键，`for k,v in obj` 取键值
+- `null` / `undefined` 转入 else, 无则忽略
+- 非可迭代值抛 `TemplateError`
 
 ### 设置变量
 
@@ -124,11 +132,11 @@ tpl.render({ title: 'Hi' });
 ## 表达式作用域
 
 - 标识符先查 render 数据（含循环子作用域），未命中再查 `globalData`
-- 只做顶层遮蔽：`data.abc` 存在时，`globalData.abc` 整体不可见，不做深合并
+- 仅顶层遮蔽：`data.abc` 存在时，`globalData.abc` 整体不可见，不做深合并
 - `{% set %}` 只写 render 数据，不修改 `globalData` / `GLOBAL`
 - `process` / `require` / `globalThis` 等宿主全局不可见
 - `this` 也是该作用域，可写 `this.user.name`、`this['x-y']`
-- 这是标识符级隔离，不是沙箱；模板与数据应视为可信
+- 模板与数据应视为可信，这是标识符级隔离，不是沙箱
 
 ## GLOBAL
 
@@ -164,7 +172,7 @@ const tpl = compile(source, {
 ```ts
 compile(source, {
   baseDir: '/templates',   // include 相对目录，可选
-  rootDir: '/templates',   // include 安全根，默认等于 baseDir
+  rootDir: '/templates',   // include 安全根，默认同 baseDir
   globalData: GLOBAL,      // 全局数据，默认 GLOBAL
 });
 
@@ -204,7 +212,7 @@ try {
 
 ## 非 Node 环境
 
-核心的 `compile` / `render`（含 JS 表达式、`$formatDate` 等）不依赖 Node 内置模块，可用于浏览器 / Edge Runtime（经打包器处理 CommonJS）。
+核心的 `compile` / `render`（含 JS 表达式、`$format` 等）不依赖 Node 内置模块，可用于浏览器 / Edge Runtime（经打包器处理 CommonJS）。
 
 - `fs` / `path` 是**惰性加载**：`import` 本库不会失败
 - `compileFile`、`include` 在调用/编译到时才提示需要 Node.js `fs` / `path`

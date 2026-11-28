@@ -85,7 +85,7 @@ export class IfBlock implements Block {
 
 export class ForBlock implements Block {
   constructor(
-    private readonly variable: string,
+    private readonly variables: string[],
     private readonly iterable: Evaluator,
     private readonly body: Block[],
     private readonly elseBody: Block[],
@@ -95,20 +95,27 @@ export class ForBlock implements Block {
 
   render(state: RenderState, scope: Scope): void {
     const value = this.iterable(scope.view);
+    const duoed = this.variables.length > 1;
     let entries: Iterable<any> | null = null;
+    let keyed = false;
 
     if (value === null || value === undefined) {
       entries = null;
-    } else if (
-      typeof value === 'string'
+    } else if (value instanceof Map) {
+      entries = value.entries();
+      keyed = true;
+    } else if (value instanceof Set
       || Array.isArray(value)
-      || value instanceof Map
-      || value instanceof Set
+      || typeof value === 'string'
       || typeof value[Symbol.iterator] === 'function'
     ) {
+      if (duoed) {
+        throw new TemplateError('for k, v requires a Map or plain object', this.line, this.file);
+      }
       entries = value;
     } else if (isPlainObject(value)) {
       entries = Object.entries(value);
+      keyed = true;
     } else {
       throw new TemplateError(`Non-iterable value in for`, this.line, this.file);
     }
@@ -118,7 +125,14 @@ export class ForBlock implements Block {
       for (const item of entries) {
         hasItems = true;
         const child = createScope(Object.create(scope.data), state.globalData);
-        child.data[this.variable] = item;
+        if (duoed) {
+          child.data[this.variables[0]] = (item as any[])[0];
+          child.data[this.variables[1]] = (item as any[])[1];
+        } else if (keyed) {
+          child.data[this.variables[0]] = (item as any[])[0];
+        } else {
+          child.data[this.variables[0]] = item;
+        }
         renderBlocks(this.body, state, child);
       }
     }

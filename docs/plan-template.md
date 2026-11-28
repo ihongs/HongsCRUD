@@ -1,6 +1,6 @@
 # hongs-template 模板引擎子项目计划
 
-> 状态：**已实施**（`npm run check` / `npm test` / `npm run build` 通过，139 项测试；`npm pack --dry-run` 校验通过）。
+> 状态：**已实施**（`npm run check` / `npm test` / `npm run build` 通过，143 项测试；`npm pack --dry-run` 校验通过）。
 >
 > 参考实现：[Template.java](https://github.com/ihongs/HongsCORE/blob/master/hongs-serv/src/main/java/io/github/ihongs/util/Template.java)（配套 [Synt.java](https://github.com/ihongs/HongsCORE/blob/master/hongs-core/src/main/java/io/github/ihongs/util/Synt.java)、[Syno.java](https://github.com/ihongs/HongsCORE/blob/master/hongs-core/src/main/java/io/github/ihongs/util/Syno.java)）。
 >
@@ -208,7 +208,7 @@ tpl.render({
 | `{{ expr }}` | **任意 JS 表达式**，例如 `user?.name`、`items[0].tags[1]`、`items.map(x => x.name).join(', ')`、`` `Hi ${name}` ``、`/^\d+$/.test(code)`；标识符先查 render 数据、未命中回退 `globalData`（D4），`this` 也指向该作用域；深层取值建议用 `?.` 容错，不提供额外 `$get` |
 | `{#..#}` | 注释，整段丢弃；支持跨行 |
 | `{%if expr%}…{%elif expr%}…{%else%}…{%endif%}` | 条件为 **JS 真值**（`Boolean(expr)`）；判断“有效值”（含空集合、`0`、`''`、`NaN`）请用 `$isValid()` |
-| `{%for x in expr%}…{%else%}…{%endfor%}` | 数组/字符串/`Set`/可迭代对象 → 元素；`Map`/普通对象 → `[key, value]` 元组（JS 惯例）；`null/undefined` 视为空；非可迭代抛 `TemplateError`；空集合走 `else` |
+| `{%for x in expr%}…{%else%}…{%endfor%}` | 单变量：数组/字符串/`Set`/可迭代对象 → 元素，`Map`/普通对象 → 键；`for k, v in expr` 仅对 `Map`/普通对象解包 `[key, value]`，用于其他类型抛 `TemplateError`；`null/undefined` 视为空；空集合走 `else` |
 | `{%set name = expr%}` | 计算 JS 表达式后写入作用域（见 §4.3） |
 | `{%include "path" [with expr]%}` | 编译期解析并编译；`with` 的表达式在渲染期求值 |
 | 标签扫描 | `}}` / `%}` / `#}` 的结束判断识别 `'` `"` `` ` `` 字符串与简化正则字面量，避免 `{{ "}}" }}` 被截断 |
@@ -319,7 +319,7 @@ template/
 1. JS 表达式：可选链（含缺失根变量，如 `a?.b?.c`）、`??`、数组 `[n]`、模板字面量、正则 `.test()`、`map/join`、箭头函数；`this` 访问（`this.user.name`、`this['x-y']`、箭头函数内 `this.suffix`）；标签内空白（`{{expr}}` 与 `{{ expr }}`、`{%if%}` 与 `{% if %}` 均支持）。
 2. 输出：`null/undefined` 不输出；数字/数组/`String()` 行为。
 3. `if / elif / else`、JS 真值边界（`0`、`''`、`[]`、`{}` 均为真），`$isValid()` 对 `false` / `0` / `''` / `NaN` / 空数组 / 空对象 / 空 `Map`/`Set` 返回 `false`。
-4. `for` 遍历数组 / 字符串 / `Set` / `Map` / 对象，`[key, value]` 元组写法，`$range()` 迭代，生成器 / 自定义可迭代 / `Map#keys()` 迭代器，null 原型对象，`for-else`，`null` 视为空，非可迭代抛错。
+4. `for` 遍历数组 / 字符串 / `Set` / `Map` / 对象；单变量取元素或键，`for k, v` 仅对象/Map 解包、数组/Set 等抛错；`$range()` 迭代，生成器 / 自定义可迭代 / `Map#keys()` 迭代器，null 原型对象，`for-else`，`null` 视为空，非可迭代抛错。
 5. `set`：计数器累加、循环变量不外泄、`set` 新变量只在当层可见。
 6. 独立行裁剪：首行/尾行、连续指令、多标签同行、跨行注释、CRLF、纯指令/注释文件、行内标签保留、空行段落保留、字符串中的 `}}` / `%}` 不误截断（§4.2 示例逐条断言）。
 7. `include`：相对路径、`../`、`with` 子上下文（不继承调用方变量）、嵌套 include、无 `baseDir` 抛错、文件不存在抛错、越出 `rootDir` 抛错、子模板错误带 `file` / `line`；`compileFile` 默认用文件目录、显式 `baseDir` / `rootDir` 可覆盖。

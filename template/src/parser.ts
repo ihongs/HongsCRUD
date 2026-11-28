@@ -378,10 +378,12 @@ class Parser {
 
   private parseFor(token: TagToken): ForBlock {
     const content = token.content.trim();
-    const match = /^for\s+([A-Za-z_$][\w$]*)\s+in\s+([\s\S]+)$/.exec(content);
+    const match = /^for\s+([A-Za-z_$][\w$]*)\s*(?:,\s*([A-Za-z_$][\w$]*))?\s+in\s+([\s\S]+)$/.exec(content);
     if (!match) {
       throw this.error(`Invalid for statement: ${content}`, token.start);
     }
+
+    const variables = match[2] ? [match[1], match[2]] : [match[1]];
 
     this.pos++;
     let result = this.parseBlocks(['else', 'endfor']);
@@ -401,8 +403,8 @@ class Parser {
     this.pos++;
 
     return new ForBlock(
-      match[1],
-      this.compile(match[2], token),
+      variables,
+      this.compile(match[3], token),
       body,
       elseBlocks,
       lineAt(this.source, token.start),

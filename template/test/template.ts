@@ -102,11 +102,27 @@ eq(render('{%if "0"%}T{%else%}F{%endif%}'), 'T', 'string zero is truthy');
 eq(render('{% for x in items %}{{ x }}{% endfor %}', { items: [1, 2] }), '12', 'for array');
 eq(render('{%for c in "ab"%}{{c}}{%endfor%}'), 'ab', 'for string');
 eq(
-  render('{%for e in map%}{{e[0]}}={{e[1]}};{%endfor%}', { map: new Map([['a', 1], ['b', 2]]) }),
+  render('{% for k, v in map %}{{ k }}={{ v }};{% endfor %}', { map: new Map([['a', 1], ['b', 2]]) }),
   'a=1;b=2;',
-  'for map tuples',
+  'for map entries',
 );
-eq(render('{%for e in obj%}{{e[0]}}:{{e[1]}};{%endfor%}', { obj: { x: 1, y: 2 } }), 'x:1;y:2;', 'for object tuples');
+eq(render('{% for k in obj %}{{ k }},{% endfor %}', { obj: { x: 1, y: 2 } }), 'x,y,', 'for object keys');
+eq(
+  render('{% for k, v in obj %}{{ k }}:{{ v }};{% endfor %}', { obj: { x: 1, y: 2 } }),
+  'x:1;y:2;',
+  'for object entries',
+);
+eq(render('{% for k in map %}{{ k }},{% endfor %}', { map: new Map([['a', 1], ['b', 2]]) }), 'a,b,', 'for map keys');
+throws(
+  () => render('{% for k, v in items %}{{ k }}{% endfor %}', { items: [[1, 2]] }),
+  'for pair on array',
+  (err) => err instanceof TemplateError,
+);
+throws(
+  () => render('{% for k, v in set %}{{ k }}{% endfor %}', { set: new Set([1]) }),
+  'for pair on set',
+  (err) => err instanceof TemplateError,
+);
 eq(render('{%for e in set%}{{e}}{%endfor%}', { set: new Set(['a', 'b']) }), 'ab', 'for set');
 eq(render('{%for x in []%}A{%else%}E{%endfor%}'), 'E', 'for-else empty');
 eq(render('{%for x in none%}A{%else%}E{%endfor%}', { none: null }), 'E', 'for-else null');
@@ -477,7 +493,7 @@ eq(render('{%for x in g%}A{%else%}E{%endfor%}', { g: (function* empty() {})() })
   const np: any = Object.create(null);
   np.a = 1;
   np.b = 2;
-  eq(render('{%for e in o%}{{e[0]}}{{e[1]}}{%endfor%}', { o: np }), 'a1b2', 'for null-proto object');
+  eq(render('{% for k, v in o %}{{ k }}{{ v }}{% endfor %}', { o: np }), 'a1b2', 'for null-proto object');
 }
 throws(
   () => render('a\n{%for x in d%}A{%endfor%}', { d: new Date() }),
