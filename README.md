@@ -61,6 +61,16 @@ HongsCRUD/
 │   │   ├── composables/         组合式函数
 │   │   └── workers/             Web Worker（PoW）
 │   └── vite.config.ts
+├── template/                    模板引擎 hongs-template（独立 npm 包）
+│   ├── src/
+│   │   ├── index.ts             compile / compileFile / Template / TemplateError
+│   │   ├── parser.ts            模板结构解析、独立行裁剪、include 预编译
+│   │   ├── blocks.ts            Block AST、渲染与作用域
+│   │   ├── expr.ts              JS 表达式预编译与作用域
+│   │   └── data.ts              GLOBAL 与基础函数
+│   ├── test/                    断言式测试
+│   ├── dist/                    构建产物
+│   └── README.md                语法、API 与安全边界
 ├── docs/                        设计文档与开发计划
 └── README.md
 ```
@@ -68,6 +78,7 @@ HongsCRUD/
 - `crud/` —— 核心组件库，封装 `Cradle` 类、注册器（`Crud` / `Func` / `Hook` / `Role`）、`callFunc` 调度入口与共享类型，并内置 `cs` / `es` / `kv` 三个可选子组件；作为独立 npm 包发布（`hongs-crud`），供 `crud-api` 及其他端复用。
 - `crud-api/` —— 服务端 API，启动 Koa 服务提供 `/api/rpc`、`/api/sse`、`/api/upload` 与静态资源；Schema 在 `src/schemas/` 定义，Crud 实例在 `src/cruds/` 创建，RPC 方法和钩子分别在 `src/funcs/` 和 `src/hooks/` 定义。
 - `crud-admin/` —— 管理端 Web，基于 Vue 3 + Vite + Pinia，覆盖登录、概览、用户管理、API Key 与个人资料。仅作为示例。
+- `template/` —— 极简 Jinja 风格模板引擎（`hongs-template`）：`{{ }}` / `{% if/for/set/include %}` / `{# #}`，表达式直接使用 JS 并在编译期预编译；支持 `GLOBAL` 全局数据、`include` 相对路径与安全根目录。面向内部报告与 LLM prompt 模板渲染。
 - `docs/` —— 设计文档与开发计划。
 
 ## 快速开始
