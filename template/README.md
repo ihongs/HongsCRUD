@@ -210,15 +210,6 @@ try {
 - `compileFile`、`include` 在调用/编译到时才提示需要 Node.js `fs` / `path`
 - `$format` 全部为纯 JS 实现，浏览器与 Node 行为一致
 
-## 开发
-
-```bash
-npm install
-npm run check   # 类型检查
-npm test        # 构建测试并运行
-npm run build   # 输出 dist
-```
-
 ## License
 
 MIT
